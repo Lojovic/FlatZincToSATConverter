@@ -1,13 +1,14 @@
-var 0..5: x;
-var -2..1: y;
-var 1..8: z;
-var -2..3: s;
-array [1..4] of var int: xyzs = [x, y, z, s];
+var 0..50: x;
+var -2..100: y;
+var 1..80: z;
+var -2..30: s;
 
-constraint int_lin_le([1, -2, 4, -2], xyzs, -4);
 constraint int_le(x, y);
 constraint int_lt(x, z);
 constraint int_ne(x, s);
 constraint int_eq(y, z);
 constraint int_min(z, s, y);
 constraint int_max(x, y, z);
+constraint int_plus(z, y, s);
+
+solve satisfy;

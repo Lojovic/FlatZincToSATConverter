@@ -1,0 +1,544 @@
+%{
+
+int yylex();
+
+#define yyerror printf
+
+#include <iostream>
+
+%}
+
+%debug
+%glr-parser
+%expect 2
+
+%code requires{
+    #include <iostream>
+    #include <vector>
+    #include <variant>
+
+    using namespace std;
+
+    //TODO dodati ostale tipove
+    enum BasicParType{INT, BOOL};
+    using BasicLiteralExpr = variant<int, bool>;
+    using BasicExpr = variant<BasicLiteralExpr*, string*>;
+
+    struct ParArrayType{
+        BasicParType type;
+        int num_of_elems;
+        ParArrayType(BasicParType type, int num_of_elems) : 
+        type(type), num_of_elems(num_of_elems){}
+    };
+    using ParType = variant<BasicParType, ParArrayType*>;
+
+    struct ParArrayLiteral{
+        vector<BasicLiteralExpr*>* elems;
+        ParArrayLiteral(vector<BasicLiteralExpr*>* elems):
+        elems(elems){}
+    };
+    using ParExpr = variant<BasicLiteralExpr*, ParArrayLiteral*>;
+
+    struct Parameter {
+        ParType* type;
+        string* name;
+        ParExpr* value;
+        Parameter(ParType* type, string* name, ParExpr* value):
+        type(type), name(name), value(value){}
+    };
+
+    struct IntRangeVarType{
+        int left;
+        int right;
+        IntRangeVarType(int left, int right):
+        left(left), right(right){}
+    };
+
+    struct IntSetVarType{
+        vector<int>* elems;
+        IntSetVarType(vector<int>* elems):
+        elems(elems){}
+    };
+    using BasicVarType = variant<BasicParType, IntRangeVarType*, IntSetVarType*>;
+
+    struct ArrayVarType{
+        int size;
+        BasicVarType* type;
+        ArrayVarType(int size, BasicVarType* type):
+        size(size), type(type){}
+    };
+
+    struct BasicVar{
+        BasicVarType* type;
+        string* name;
+        BasicExpr* value;
+        bool helper;
+        int id;
+        BasicVar(BasicVarType* type, string* name, BasicExpr* value, bool helper):
+        type(type), name(name), value(value), helper(helper){}
+        BasicVar(BasicVarType* type, string* name, bool helper):
+        type(type), name(name), helper(helper){
+            value = nullptr;
+        }        
+    };
+
+    using ArrayLiteral = vector<BasicExpr*>;
+
+    struct ArrayVar{
+        ArrayVarType* type;
+        string* name;
+        ArrayLiteral* value;
+        ArrayVar(ArrayVarType* type, string* name, ArrayLiteral* value):
+        type(type), name(name), value(value){}
+    };
+
+    using Variable = variant<BasicVar*, ArrayVar*>;
+
+    using Expr = variant<BasicExpr*, ArrayLiteral*>;
+    using ArgsList = vector<Expr*>;
+
+    struct Constraint {
+        string* name;
+        ArgsList* args;
+        Constraint(string* name, ArgsList* args):
+        name(name), args(args){}
+    };
+
+    using BasicPredParamType = variant<BasicParType, BasicVarType*, IntRangeVarType*, IntSetVarType*>;
+
+    struct PredicateParam{
+        string* name;
+        BasicPredParamType* type;
+
+        PredicateParam(string* name, BasicPredParamType* type) : 
+        name(name), type(type){}
+    };
+
+    struct Predicate{
+        string* name;
+        vector<PredicateParam*>* params;
+
+        Predicate(string* name, vector<PredicateParam*>* params) : 
+        name(name), params(params){}
+    };
+
+    enum SolveType {ORDINARY, MINIMIZE, MAXIMIZE};
+
+    struct Solve {
+        SolveType type;
+        BasicExpr* expr;
+        Solve(SolveType type):
+        type(type){}
+        Solve(SolveType type, BasicExpr* expr):
+        type(type), expr(expr){}
+    };
+    using Item = variant<Parameter*, Variable*, Constraint*, Solve*, Predicate*>;
+
+    template<typename T>
+    bool is(const Item& item) { return std::holds_alternative<T>(item);}
+
+    template<typename T>
+    T as(const Item& item) { return std::get<T>(item); }
+
+    extern vector<Item>* parsing_result;
+
+}
+
+%token<basic_par_type_attr> BASIC_PAR_TYPE;
+%token ARRAY;
+%token VAR;
+%token PREDICATE;
+%token CONSTRAINT;
+%token SOLVE;
+%token SET;
+%token OF;
+%token SOLVE_SATISFY;
+%token SOLVE_MAXIMIZE;
+%token SOLVE_MINIMIZE;
+%token<bool_attr> BOOL_LITERAL;
+%token<int_attr> INT_LITERAL;
+%token<str_attr> VAR_PAR_IDENTIFIER;
+%token EQUALS;
+%token OPEN_PARENT_SMALL;
+%token CLOSED_PARENT_SMALL;
+%token OPEN_PARENT_BIG;
+%token CLOSED_PARENT_BIG;
+%token SEMICOLON;
+%token COMMA;
+%token DOUBLE_COLON;
+%token COLON;
+%token OPEN_PARENT_MED;
+%token CLOSED_PARENT_MED ;
+%token TWO_DOTS;
+%token TRIPLE_QUOTATIONS;
+%token<str_attr> STRING_CONTENTS;
+%token MISMATCH;
+
+%type<pred_params_attr> predicate_params
+%type<pred_param_attr> predicate_param
+%type<basic_pred_param_type_attr> pred_param_type
+%type<pred_attr> predicate_item
+%type<int_attr> index_set
+%type<par_type_attr> par_type;
+%type<basic_literal_expr_attr> basic_literal_expr;
+%type<par_array_literal_attr> par_array_literal;
+%type<par_array_literal_attr> par_array_item_list;
+%type<par_attr> par_decl_item;
+%type<par_expr_attr> par_expr;
+%type<vector_of_int_attr> int_literal_list;
+%type<basic_var_type_attr> basic_var_type;
+%type<basic_expr_attr> basic_expr;
+%type<array_var_type_attr> array_var_type;
+%type<array_literal_attr> array_literal;
+%type<array_literal_attr> array_item_list;
+%type<variable_attr> var_decl_item;
+%type<expr_attr> expr;
+%type<args_list_attr> args_list;
+%type<constraint_attr> constraint_item;
+%type<solve_attr> solve_item;
+%type<basic_pred_param_type_attr> basic_pred_param_type;
+%type<variable_vector_attr> var_decl_item_list;
+%type<predicate_vector_attr> predicate_item_list;
+%type<parameter_vector_attr> par_decl_item_list;
+%type<constraint_vector_attr> constraint_item_list;
+
+%union{
+    std::string* str_attr;
+    vector<Item>* items_attr;
+    bool bool_attr;
+    int int_attr;
+    vector<PredicateParam*>* pred_params_attr;
+    PredicateParam* pred_param_attr;
+    Predicate* pred_attr;
+    BasicParType basic_par_type_attr;
+    ParType* par_type_attr;
+    BasicLiteralExpr* basic_literal_expr_attr;
+    ParArrayLiteral* par_array_literal_attr;
+    Parameter* par_attr;
+    ParExpr* par_expr_attr;
+    BasicVarType* basic_var_type_attr;
+    BasicExpr* basic_expr_attr;
+    ArrayVarType* array_var_type_attr;
+    ArrayLiteral* array_literal_attr;
+    Variable* variable_attr;
+    vector<int>* vector_of_int_attr;
+    Expr* expr_attr;
+    ArgsList* args_list_attr;
+    Constraint* constraint_attr;
+    Solve* solve_attr;
+    BasicPredParamType* basic_pred_param_type_attr;
+    vector<Variable*>* variable_vector_attr;
+    vector<Predicate*>* predicate_vector_attr;
+    vector<Parameter*>* parameter_vector_attr;
+    vector<Constraint*>* constraint_vector_attr;
+}
+
+%%
+
+model:
+    predicate_item_list 
+    par_decl_item_list
+    var_decl_item_list
+    constraint_item_list
+    solve_item {
+        if(!(($1)->empty()))
+            for(auto elem : *($1))
+                parsing_result->emplace_back(elem);
+        if(!(($2)->empty()))
+            for(auto elem : *($2))
+                parsing_result->emplace_back(elem);
+        if(!(($3)->empty()))        
+            for(auto elem : *($3))
+                parsing_result->emplace_back(elem);
+        if(!(($4)->empty()))    
+            for(auto elem : *($4))
+                parsing_result->emplace_back(elem);
+    }
+    ;
+
+predicate_item_list:
+    {
+        vector<Predicate*>* v = new vector<Predicate*>;
+        $$ = v;
+    }
+    | predicate_item predicate_item_list{       
+        vector<Predicate*>* v = $2;
+        v->emplace(v->begin(), $1);
+        $$ = v;
+    }
+    ;
+
+predicate_item:
+    PREDICATE VAR_PAR_IDENTIFIER OPEN_PARENT_SMALL predicate_params CLOSED_PARENT_SMALL {
+        Predicate* pred = new Predicate($2, $4);
+        $$ = pred;
+    }
+    ;
+
+predicate_params:
+      predicate_param COMMA predicate_params { 
+        vector<PredicateParam*>* p = $3;
+        p->emplace(p->begin(), $1);
+        $$ = p; 
+     }
+    | predicate_param { 
+        vector<PredicateParam*>* p = new vector<PredicateParam*>{$1};
+        $$ = p; 
+    }
+    ;
+
+predicate_param:
+    pred_param_type COLON VAR_PAR_IDENTIFIER {
+        
+        PredicateParam* p = new PredicateParam($3, $1);
+        $$ = p;
+    }
+    ;
+
+//TODO pravi shift/reduce conflict, popraviti
+par_type:
+    BASIC_PAR_TYPE{
+        if($1 == BasicParType::INT)
+            $$ = new ParType(BasicParType::INT);
+        else if($1 == BasicParType::BOOL)
+            $$ = new ParType(BasicParType::BOOL);
+    }
+    | ARRAY OPEN_PARENT_MED index_set CLOSED_PARENT_MED OF BASIC_PAR_TYPE{
+        if($6 == BasicParType::INT){
+            ParArrayType* p = new ParArrayType(BasicParType::INT, $3);
+            $$ = new ParType(p);
+        } else if($6 == BasicParType::BOOL){
+            ParArrayType* p = new ParArrayType(BasicParType::BOOL, $3);
+            $$ = new ParType(p);
+        }
+    }
+    ;
+
+//TODO pravi shift/reduce conflict, popraviti
+array_var_type:
+    ARRAY OPEN_PARENT_MED index_set CLOSED_PARENT_MED OF basic_var_type {
+        $$ = new ArrayVarType($3, $6);
+    }
+    ;
+
+
+index_set:
+    INT_LITERAL TWO_DOTS INT_LITERAL { 
+        if ($1 != 1){
+            yyerror("Error: first term in index set must be 1\n");
+        }
+        $$ = $3; }
+    ;
+
+basic_var_type:
+    VAR BASIC_PAR_TYPE { $$ = new BasicVarType($2); }
+    | VAR INT_LITERAL TWO_DOTS INT_LITERAL { 
+        IntRangeVarType* v = new IntRangeVarType($2, $4);
+        $$ = new BasicVarType(v); 
+    }
+    | VAR OPEN_PARENT_BIG int_literal_list CLOSED_PARENT_BIG {
+        IntSetVarType* v = new IntSetVarType($3);
+        $$ = new BasicVarType(v);
+    }
+    ;
+
+int_literal_list:
+    {
+        vector<int>* v = new vector<int>;
+        $$ = v;
+    }
+    | INT_LITERAL int_literal_list{
+        vector<int>* v = $2;
+        v->emplace(($2)->begin(), $1);
+        $$ = v;
+    }
+    ;
+
+basic_pred_param_type:
+    BASIC_PAR_TYPE {
+        $$ = new BasicPredParamType($1);
+    }
+    | basic_var_type {
+        $$ = new BasicPredParamType($1);
+    }
+    | INT_LITERAL TWO_DOTS INT_LITERAL {
+        IntRangeVarType* t = new IntRangeVarType($1, $3);
+        $$ = new BasicPredParamType(t);
+    }
+    | OPEN_PARENT_BIG int_literal_list CLOSED_PARENT_BIG{
+        IntSetVarType* t = new IntSetVarType($2);
+        $$ = new BasicPredParamType(t);
+    }
+    ;
+
+pred_param_type:
+
+    basic_pred_param_type { $$ = $1;}
+    // | ARRAY OPEN_PARENT_MED index_set CLOSED_PARENT_MED OF basic_pred_param_type
+    // | ARRAY OPEN_PARENT_MED BASIC_PAR_TYPE CLOSED_PARENT_MED OF basic_pred_param_type
+    ;
+
+basic_literal_expr:
+    BOOL_LITERAL { $$ = new BasicLiteralExpr($1); }
+    | INT_LITERAL { $$ = new BasicLiteralExpr($1); }
+    ;
+
+basic_expr:
+    basic_literal_expr { $$ = new BasicExpr($1); }
+    | VAR_PAR_IDENTIFIER { $$ = new BasicExpr($1); }
+    ;
+
+expr:
+    basic_expr {
+        BasicExpr* b = $1;
+        $$ = new Expr(b);
+    }
+    | array_literal {
+        ArrayLiteral* a = $1;
+        $$ = new Expr(a);
+    }
+    ;
+
+par_expr:
+    basic_literal_expr {
+        $$ = new ParExpr($1);
+    }
+    | par_array_literal{
+        $$ = new ParExpr($1);
+    }
+    ;
+
+array_literal:
+    OPEN_PARENT_MED array_item_list CLOSED_PARENT_MED{ $$ = $2; }
+    ;
+
+array_item_list:
+    {
+        $$ = new ArrayLiteral();
+    }
+    | basic_expr COMMA array_item_list {
+        ArrayLiteral* v = $3;
+        v->emplace(v->begin(), $1);
+        $$ = v;
+    }
+    | basic_expr array_item_list {
+        ArrayLiteral* v = $2;
+        v->emplace(v->begin(), $1);
+        $$ = v;
+    }
+    ;
+
+par_array_literal:
+    OPEN_PARENT_MED par_array_item_list CLOSED_PARENT_MED{
+        $$ = $2;
+    }
+    ;
+
+par_array_item_list:
+    {
+        vector<BasicLiteralExpr*>* v = new vector<BasicLiteralExpr*>;
+        ParArrayLiteral* p = new ParArrayLiteral(v); 
+        $$ = p;
+
+    }
+    | basic_literal_expr COMMA par_array_item_list {
+        ParArrayLiteral* p = $3;
+        p->elems->emplace(p->elems->begin(), $1);
+        $$ = p;
+    }  
+    | basic_literal_expr par_array_item_list {
+        ParArrayLiteral* p = $2;
+        p->elems->emplace(p->elems->begin(), $1);
+        $$ = p;
+    }    
+    ;
+
+
+par_decl_item_list:
+    {
+        vector<Parameter*>* v = new vector<Parameter*>;
+        $$ = v;
+    }
+    | par_decl_item par_decl_item_list{
+        vector<Parameter*>* v = $2;
+        v->emplace(v->begin(), $1);
+        $$ = v;
+    }
+    ;
+
+par_decl_item:
+    par_type COLON VAR_PAR_IDENTIFIER EQUALS par_expr SEMICOLON
+    {
+        $$ = new Parameter($1, $3, $5);
+    }
+
+var_decl_item_list:
+    {
+        vector<Variable*>* v = new vector<Variable*>;
+        $$ = v;
+    }
+    | var_decl_item var_decl_item_list {
+        vector<Variable*>* v = $2;
+        v->emplace(v->begin(), $1);
+        $$ = v;
+    }
+    ;
+
+//TODO dodaj anotacije
+var_decl_item:
+    basic_var_type COLON VAR_PAR_IDENTIFIER EQUALS basic_expr SEMICOLON {
+        BasicVar* v = new BasicVar($1, $3, $5, false);
+        $$ = new Variable(v);
+    }
+    | basic_var_type COLON VAR_PAR_IDENTIFIER SEMICOLON {
+        BasicVar* v = new BasicVar($1, $3, false);
+        $$ = new Variable(v);
+    }
+    | array_var_type COLON VAR_PAR_IDENTIFIER EQUALS array_literal SEMICOLON {
+        ArrayVar* v = new ArrayVar($1, $3, $5);
+        $$ = new Variable(v);
+    }
+
+constraint_item_list:
+    {
+        vector<Constraint*>* v = new vector<Constraint*>;
+        $$ = v;
+    }
+    | constraint_item constraint_item_list{
+        vector<Constraint*>* v = $2;
+        v->emplace(v->begin(), $1);
+        $$ = v;
+    }
+    ;
+
+constraint_item:
+    CONSTRAINT VAR_PAR_IDENTIFIER OPEN_PARENT_SMALL args_list CLOSED_PARENT_SMALL SEMICOLON {
+        Constraint* c = new Constraint($2, $4);
+        $$ = c;
+    }
+    ;
+
+args_list:
+    {
+        ArgsList* a = new ArgsList();
+        $$ = a;
+    }
+    | expr COMMA args_list {
+        ArgsList* a = $3;
+        a->emplace(($3)->begin(), $1);
+        $$ = a;
+    }
+    | expr args_list {
+        ArgsList* a = $2;
+        a->emplace(($2)->begin(), $1);
+        $$ = a;
+    }
+    ;
+
+solve_item:
+    SOLVE SOLVE_SATISFY SEMICOLON { $$ = new Solve(SolveType::ORDINARY); }
+    | SOLVE SOLVE_MINIMIZE basic_expr SEMICOLON { $$ = new Solve(SolveType::MINIMIZE, $3); }
+    | SOLVE SOLVE_MAXIMIZE basic_expr SEMICOLON { $$ = new Solve(SolveType::MAXIMIZE, $3); }
+    ;
+%%
+ 

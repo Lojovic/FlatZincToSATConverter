@@ -1,31 +1,34 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include "Tokenizer.hpp"
-#include "Parser.hpp"
+#include "parser.hpp"
 #include "Encoder.hpp"
 
-int main() {
+extern int yyparse();
+extern FILE* yyin;
 
-    std::ifstream file("../input.fzn");
+extern YYSTYPE yyval;  
 
-    if (!file.is_open()) {
-        std::cerr << "Error opening file!" << std::endl;
+vector<Item>* parsing_result = new vector<Item>;
+
+int main(int argc, char** argv) {
+
+    if (argc > 1) {
+        yyin = fopen(argv[1], "r");
+        if (!yyin) {
+            std::cerr << "Could not open file " << argv[1] << std::endl;
+            return 1;
+        }
+    } else {
+        yyin = stdin;
+    }
+
+    if(yyparse() != 0){
+        cerr << "Parsing failed!" << endl;
         return 1;
     }
 
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-
-    std::string fileContents = buffer.str();
-
-    Tokenizer tokenizer(fileContents);
-    std::vector<Token> tokens = tokenizer.tokenize();
-
-    Parser parser(tokens);
-    parser.parse_program();
-
-    Encoder encoder(parser.items);
+    Encoder encoder(*parsing_result);
     auto clauses = encoder.encode_to_cnf();
 
     if(!encoder.unsat){
@@ -35,7 +38,8 @@ int main() {
     }
     // for(auto clause : clauses){
     //     for(auto literal : clause)
-    //         std::cout << literal << " ";
+    //         std::cout << (literal->pol ? "" : "-") << (literal->type == LiteralType::HELPER ? "q_" : "p_") 
+    //                   << literal->id << "_" << literal->val << " ";
     //     std::cout << std::endl;
     // }
 

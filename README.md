@@ -5,22 +5,20 @@ This project is a **Flatzinc to SAT converter**, built for a **course on Automat
 ## Features
 
 - **Converts Flatzinc to SAT**: The primary functionality of this project is converting a Flatzinc model into a SAT problem.
-- **Encoding Constraints**: Currently, the converter supports the encoding of certain basic constraints listed below into the SAT format.
+- **Encoding Constraints**: Currently, the converter supports the encoding of most FlatZinc integer constraints.
 - **Supports Integer Range Variables**: The converter works with integer variables that fall within a defined range.
+- **Solving CSPs**: The converter can also be used as a CSP solver, as it invokes a backend SAT solver (MiniSAT) and decodes it's output.
   
 ### Supported Constraints
 
-- **int_abs(var int: a, var int: b)**: Constrains b to be the absolute value of a
-- **int_eq(var int: a, var int: b)**: Constrains a to be equal to b
-- **int_le(var int: a, var int: b)**: Constrains a to be less than or equal to b
-- **int_lin_le(array [int] of int: as, array [int] of var int: bs,int: c)**: Constrains ∑ as [ i ]* bs [ i ] ≤ c
-- **int_lt(var int: a, var int: b)**: Constrains a to be less than b
-- **int_max(var int: a, var int: b, var int: c)**: Constrains max( a , b ) = c
-- **int_min(var int: a, var int: b, var int: c)**: Constrains min( a , b ) = c
-- **int_ne(var int: a, var int: b)**: Constrains a ≠ b
+The list of FlatZinc builtin constraints can be found [here](https://docs.minizinc.dev/en/2.5.5/lib-flatzinc.html).
+
+Currently, all Integer FlatZinc builtins are supported, other than set_in.
 
 
 ## Installation
+
+Dependencies needed are flex (version 2.6.4 or greater) and bison (version 3.8.2 or greater).
 
 To get started with this project, clone the repository and follow the steps below:
 
@@ -38,11 +36,12 @@ make
 
 ## Usage
 
-To run this project, modify the input.fzn file to contain the FlatZinc model and run the following command:
+To run this project run the following command, where input.fzn is an input FlatZinc model
+:
 
 ```bash
 
-./flatzinc_to_sat
+./flatzinc_to_sat input.fzn
 ```
 
 The file formula.cnf contains the SAT formula of the FlatZinc model

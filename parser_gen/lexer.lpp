@@ -1,0 +1,61 @@
+%option noyywrap
+
+%{
+#include <iostream>
+#include <string>
+#include <vector>
+#include "parser.hpp"  
+
+using namespace std;
+
+%}
+
+%%
+
+"int"                       { yylval.basic_par_type_attr = BasicParType::INT; return BASIC_PAR_TYPE; }
+"bool"                      { yylval.basic_par_type_attr = BasicParType::BOOL; return BASIC_PAR_TYPE; }
+"set of int"                { yylval.basic_par_type_attr = BasicParType::BOOL; return BASIC_PAR_TYPE; }
+"-?[0-9]+\\.[.]-?[0-9]+"    { yylval.basic_par_type_attr = BasicParType::BOOL; return BASIC_PAR_TYPE; } 
+
+"array"         { return ARRAY; }
+"var"           { return VAR; }
+"predicate"     { return PREDICATE; }
+"constraint"    { return CONSTRAINT; }
+"solve"         { return SOLVE; }
+"set"           { return SET; }
+"of"            { return OF; }
+"satisfy"       { return SOLVE_SATISFY; }
+"maximize"      { return SOLVE_MAXIMIZE; }
+"minimize"      { return SOLVE_MINIMIZE; }
+
+
+"true"       { yylval.bool_attr = true; return BOOL_LITERAL; }
+"false"      { yylval.bool_attr = false; return BOOL_LITERAL; }
+
+[-]?[0-9]+   { yylval.int_attr = strtol(yytext, NULL, 10); return INT_LITERAL; }
+[-]?0x[0-9A-Fa-f]+  { yylval.int_attr = strtol(yytext, NULL, 16); return INT_LITERAL; }
+[-]?0o[0-7]+        { yylval.int_attr = strtol(yytext, NULL, 8); return INT_LITERAL; }
+
+[A-Za-z_][A-Za-z0-9_]*      { yylval.str_attr = new string(strdup(yytext)); return VAR_PAR_IDENTIFIER; }
+
+
+"="         { return EQUALS; }
+"("         { return OPEN_PARENT_SMALL; }
+")"         { return CLOSED_PARENT_SMALL; }
+"{"         { return OPEN_PARENT_BIG; }
+"}"         { return CLOSED_PARENT_BIG; }
+";"         { return SEMICOLON; }
+","         { return COMMA; }
+"::"        { return DOUBLE_COLON; }
+":"         { return COLON; }
+"["         { return OPEN_PARENT_MED; }
+"]"         { return CLOSED_PARENT_MED; }
+"\.\."      { return TWO_DOTS; }
+"\"\"\""    { return TRIPLE_QUOTATIONS; }
+
+
+[ \t\n]+    {  }
+
+.           { std::cerr << "Unexpected token: " << yytext << std::endl; return MISMATCH; }
+
+%%
