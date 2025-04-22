@@ -54,7 +54,7 @@
 
 
 /* First part of user prologue.  */
-#line 1 "parser.ypp"
+#line 1 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
 
 
 int yylex();
@@ -64,7 +64,7 @@ int yylex();
 #include <iostream>
 
 
-#line 68 "parser.cpp"
+#line 68 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -139,21 +139,22 @@ enum yysymbol_kind_t
   YYSYMBOL_basic_pred_param_type = 43,     /* basic_pred_param_type  */
   YYSYMBOL_pred_param_type = 44,           /* pred_param_type  */
   YYSYMBOL_basic_literal_expr = 45,        /* basic_literal_expr  */
-  YYSYMBOL_basic_expr = 46,                /* basic_expr  */
-  YYSYMBOL_expr = 47,                      /* expr  */
-  YYSYMBOL_par_expr = 48,                  /* par_expr  */
-  YYSYMBOL_array_literal = 49,             /* array_literal  */
-  YYSYMBOL_array_item_list = 50,           /* array_item_list  */
-  YYSYMBOL_par_array_literal = 51,         /* par_array_literal  */
-  YYSYMBOL_par_array_item_list = 52,       /* par_array_item_list  */
-  YYSYMBOL_par_decl_item_list = 53,        /* par_decl_item_list  */
-  YYSYMBOL_par_decl_item = 54,             /* par_decl_item  */
-  YYSYMBOL_var_decl_item_list = 55,        /* var_decl_item_list  */
-  YYSYMBOL_var_decl_item = 56,             /* var_decl_item  */
-  YYSYMBOL_constraint_item_list = 57,      /* constraint_item_list  */
-  YYSYMBOL_constraint_item = 58,           /* constraint_item  */
-  YYSYMBOL_args_list = 59,                 /* args_list  */
-  YYSYMBOL_solve_item = 60                 /* solve_item  */
+  YYSYMBOL_set_literal = 46,               /* set_literal  */
+  YYSYMBOL_basic_expr = 47,                /* basic_expr  */
+  YYSYMBOL_expr = 48,                      /* expr  */
+  YYSYMBOL_par_expr = 49,                  /* par_expr  */
+  YYSYMBOL_array_literal = 50,             /* array_literal  */
+  YYSYMBOL_array_item_list = 51,           /* array_item_list  */
+  YYSYMBOL_par_array_literal = 52,         /* par_array_literal  */
+  YYSYMBOL_par_array_item_list = 53,       /* par_array_item_list  */
+  YYSYMBOL_par_decl_item_list = 54,        /* par_decl_item_list  */
+  YYSYMBOL_par_decl_item = 55,             /* par_decl_item  */
+  YYSYMBOL_var_decl_item_list = 56,        /* var_decl_item_list  */
+  YYSYMBOL_var_decl_item = 57,             /* var_decl_item  */
+  YYSYMBOL_constraint_item_list = 58,      /* constraint_item_list  */
+  YYSYMBOL_constraint_item = 59,           /* constraint_item  */
+  YYSYMBOL_args_list = 60,                 /* args_list  */
+  YYSYMBOL_solve_item = 61                 /* solve_item  */
 };
 typedef enum yysymbol_kind_t yysymbol_kind_t;
 
@@ -416,16 +417,16 @@ typedef int yytype_uint16;
 /* YYFINAL -- State number of the termination state.  */
 #define YYFINAL  6
 /* YYLAST -- Last index in YYTABLE.  */
-#define YYLAST   136
+#define YYLAST   162
 
 /* YYNTOKENS -- Number of terminals.  */
 #define YYNTOKENS  32
 /* YYNNTS -- Number of nonterminals.  */
-#define YYNNTS  29
+#define YYNNTS  30
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  55
+#define YYNRULES  61
 /* YYNSTATES -- Number of states.  */
-#define YYNSTATES  122
+#define YYNSTATES  135
 /* YYMAXRHS -- Maximum number of symbols on right-hand side of rule.  */
 #define YYMAXRHS 6
 /* YYMAXLEFT -- Maximum number of symbols to the left of a handle
@@ -481,35 +482,37 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   239,   239,   260,   264,   272,   279,   284,   291,   300,
-     306,   319,   326,   334,   335,   339,   346,   350,   358,   361,
-     364,   368,   376,   382,   383,   387,   388,   392,   396,   403,
-     406,   412,   416,   419,   424,   432,   438,   444,   449,   458,
-     462,   470,   476,   480,   489,   493,   497,   503,   507,   515,
-     522,   526,   531,   539,   540,   541
+       0,   263,   263,   284,   288,   296,   303,   308,   315,   324,
+     332,   345,   352,   360,   361,   365,   369,   376,   383,   387,
+     392,   400,   403,   406,   410,   418,   424,   425,   426,   430,
+     434,   441,   442,   446,   450,   457,   460,   466,   470,   473,
+     478,   486,   492,   498,   503,   512,   516,   524,   530,   534,
+     543,   547,   551,   557,   561,   569,   576,   580,   585,   593,
+     594,   595
 };
 #endif
 
-#define YYPACT_NINF (-93)
+#define YYPACT_NINF (-108)
 #define YYTABLE_NINF (-1)
 
 /* YYPACT[STATE-NUM] -- Index in YYTABLE of the portion describing
    STATE-NUM.  */
 static const yytype_int8 yypact[] =
 {
-       5,    17,    46,    19,     5,    45,   -93,   -93,    11,    42,
-      53,    37,   -93,     4,    54,    52,    44,     0,    47,    48,
-      64,    53,   -93,   -93,    51,    59,    56,    55,   -93,   -93,
-      57,    58,    60,    63,    54,   -93,    61,    59,    65,    67,
-      68,    69,    64,   -93,    70,    59,    71,   -93,     4,    72,
-      75,    81,    -1,    66,    79,    74,    80,    12,    78,    49,
-     -93,   -93,   -93,   -93,   -93,   -93,   -93,   -93,    95,   -93,
-     -93,    39,   -93,    77,   -93,    90,   -93,   -93,    76,    50,
-     -93,    29,    82,    50,    50,   -93,    36,    83,   -93,    96,
-      50,    84,   -93,   -93,    85,   -93,    16,   -93,    86,   -93,
-      87,    89,    39,   -93,   -93,   -93,    33,    88,   -93,   -93,
-      29,   -93,    91,   -93,   -93,   -93,    50,   -93,   -93,   -93,
-     -93,   -93
+       5,    28,    17,    55,     5,    14,  -108,  -108,    27,    42,
+      36,    68,  -108,     1,    61,    59,    56,    11,    62,    63,
+      79,    36,  -108,  -108,    65,    74,    71,    69,  -108,  -108,
+      66,    67,    70,    77,    61,  -108,    86,    72,    74,    82,
+      83,    85,    94,    79,  -108,    88,    60,    84,  -108,     1,
+      90,    89,    97,    37,    81,    -5,    95,  -108,    92,    -4,
+      93,    16,  -108,  -108,  -108,  -108,    98,  -108,  -108,  -108,
+    -108,   109,  -108,    87,    99,    41,  -108,  -108,    96,  -108,
+     106,    91,    74,  -108,   100,    64,  -108,    34,   101,    64,
+      64,  -108,  -108,   102,  -108,    54,   103,  -108,   115,   107,
+    -108,    64,   105,  -108,  -108,   110,  -108,    19,  -108,   112,
+    -108,   111,   113,  -108,    41,  -108,  -108,  -108,  -108,    50,
+     114,  -108,  -108,    34,  -108,   116,  -108,  -108,  -108,    64,
+    -108,  -108,  -108,  -108,  -108
 };
 
 /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
@@ -517,74 +520,81 @@ static const yytype_int8 yypact[] =
    means the default is an error.  */
 static const yytype_int8 yydefact[] =
 {
-       3,     0,     0,    39,     3,     0,     1,     9,     0,     0,
-      42,    39,     4,     0,     0,     0,     0,     0,     0,     0,
-      47,    42,    40,    18,     0,    16,     0,     7,    19,    22,
-       0,     0,     0,     0,     0,    13,     0,    16,     0,     0,
-       0,     0,    47,    43,     0,    16,     0,     5,     0,     0,
-       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       2,    48,    20,    17,    21,     6,     8,    12,     0,    23,
-      24,    36,    29,     0,    30,     0,    14,    15,     0,     0,
-      45,    50,     0,     0,     0,    10,    36,     0,    41,     0,
-      32,     0,    26,    25,     0,    27,    50,    28,     0,    53,
-       0,     0,    36,    38,    35,    11,    32,     0,    46,    44,
-      50,    52,     0,    55,    54,    37,    32,    34,    31,    51,
-      49,    33
+       3,     0,     0,    45,     3,     0,     1,     9,     0,     0,
+      48,    45,     4,     0,     0,     0,     0,     0,     0,     0,
+      53,    48,    46,    21,     0,    18,     0,     7,    22,    25,
+       0,     0,     0,     0,     0,    13,     0,     0,    18,     0,
+       0,     0,     0,    53,    49,     0,     0,     0,     5,     0,
+       0,     0,     0,     0,     0,     0,     0,    15,     0,     0,
+       0,     0,     2,    54,    23,    19,    18,    24,     6,     8,
+      12,     0,    26,    27,    18,    42,    35,    28,     0,    36,
+       0,     0,    18,    14,     0,     0,    51,    56,     0,     0,
+       0,    20,    10,     0,    30,    42,     0,    47,     0,     0,
+      17,    38,     0,    32,    31,     0,    33,    56,    34,     0,
+      59,     0,     0,    29,    42,    44,    41,    11,    16,    38,
+       0,    52,    50,    56,    58,     0,    61,    60,    43,    38,
+      40,    37,    57,    55,    39
 };
 
 /* YYPGOTO[NTERM-NUM].  */
 static const yytype_int8 yypgoto[] =
 {
-     -93,   -93,    99,   -93,    73,   -93,   -93,   -93,    92,   -13,
-     -29,   -93,   -93,   -50,   -78,   -93,   -93,    30,   -89,   -93,
-     -76,   101,   -93,    93,   -93,    94,   -93,   -92,   -93
+    -108,  -108,   117,  -108,    75,  -108,  -108,  -108,   108,   -13,
+     -36,  -108,  -108,   -52,  -108,   -82,  -108,  -108,    44,  -107,
+    -108,   -90,   118,  -108,   104,  -108,   119,  -108,   -98,  -108
 };
 
 /* YYDEFGOTO[NTERM-NUM].  */
 static const yytype_int8 yydefgoto[] =
 {
        0,     2,     3,     4,    26,    27,     9,    18,    32,    19,
-      46,    29,    30,    93,    95,    96,    73,    97,   107,    74,
-      87,    10,    11,    20,    21,    41,    42,    98,    60
+      47,    29,    30,   104,    77,   106,   107,    78,   108,   120,
+      79,    96,    10,    11,    20,    21,    42,    43,   109,    62
 };
 
 /* YYTABLE[YYPACT[STATE-NUM]] -- What to do in state STATE-NUM.  If
    positive, shift that token.  If negative, reduce the rule whose
    number is the opposite.  If YYTABLE_NINF, syntax error.  */
-static const yytype_int8 yytable[] =
+static const yytype_uint8 yytable[] =
 {
-      28,    94,    72,    35,   111,   100,   101,    23,    55,    17,
-     103,     1,   106,    69,    70,    36,    63,   117,   119,    24,
-      37,    86,     7,     8,    25,    71,   115,   121,   106,    79,
-      69,    70,    92,     5,    80,    28,    86,    14,   106,   110,
-       7,     8,    90,    69,    70,    92,     6,    69,    70,    92,
-      69,    70,    86,    69,    70,    90,   116,    16,    17,   102,
-      82,    83,    84,    13,    69,    70,    92,    15,    33,    31,
-      34,    40,    38,    39,    45,    47,   105,    59,    48,    44,
-      52,    56,    49,    57,    58,    62,    50,    51,    66,    54,
-      67,    68,    64,    75,    76,    77,    81,    78,    85,    88,
-      89,    17,    90,    12,    99,   112,   108,   109,    91,   113,
-     104,   114,    22,   120,    43,   118,     0,     0,     0,     0,
-       0,    65,     0,     0,     0,     0,    53,     0,     0,     0,
-       0,     0,     0,     0,     0,     0,    61
+      28,    76,    57,   105,    23,   115,    17,   111,   112,   124,
+      81,     1,   130,    85,    35,    82,    24,     6,    86,   119,
+      36,    25,   134,    95,   128,   132,    37,    88,    89,    90,
+      91,    38,    13,    72,    73,   103,    28,   119,    94,    74,
+      16,    17,   123,    95,     5,   101,   100,   119,    72,    73,
+     103,    72,    73,    14,    74,    72,    73,    74,     7,     8,
+     101,    74,    95,    75,    72,    73,   103,    15,    72,    73,
+      74,     7,     8,   129,    74,    33,    31,   114,    72,    73,
+     103,    65,    34,    66,    74,   117,    41,    39,    40,    46,
+      48,    50,    49,    45,    53,    51,    55,    52,    58,    59,
+      56,    60,    61,    64,    70,    67,    69,    71,    80,    84,
+      83,    87,    92,    46,    46,    93,    98,   113,    97,    99,
+      17,    12,   118,   110,    68,    44,   101,   121,   102,    22,
+     116,   125,   122,   126,     0,   127,     0,     0,   133,     0,
+       0,   131,    54,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,    63
 };
 
-static const yytype_int8 yycheck[] =
+static const yytype_int16 yycheck[] =
 {
-      13,    79,    52,     3,    96,    83,    84,     3,    37,     5,
-      86,     6,    90,    14,    15,    15,    45,   106,   110,    15,
-      20,    71,     3,     4,    20,    26,   102,   116,   106,    17,
-      14,    15,    16,    16,    22,    48,    86,    26,   116,    23,
-       3,     4,    26,    14,    15,    16,     0,    14,    15,    16,
-      14,    15,   102,    14,    15,    26,    23,     4,     5,    23,
-      11,    12,    13,    18,    14,    15,    16,    25,    16,    15,
-      26,     7,    25,    25,    15,    19,    89,     8,    23,    28,
-      17,    16,    25,    16,    16,    15,    28,    27,    16,    28,
-      15,    10,    21,    27,    15,    21,    18,    17,     3,    22,
-      10,     5,    26,     4,    22,    19,    22,    22,    78,    22,
-      27,    22,    11,    22,    21,    27,    -1,    -1,    -1,    -1,
-      -1,    48,    -1,    -1,    -1,    -1,    34,    -1,    -1,    -1,
-      -1,    -1,    -1,    -1,    -1,    -1,    42
+      13,    53,    38,    85,     3,    95,     5,    89,    90,   107,
+      15,     6,   119,    17,     3,    20,    15,     0,    22,   101,
+       9,    20,   129,    75,   114,   123,    15,    11,    12,    13,
+      66,    20,    18,    14,    15,    16,    49,   119,    74,    20,
+       4,     5,    23,    95,    16,    26,    82,   129,    14,    15,
+      16,    14,    15,    26,    20,    14,    15,    20,     3,     4,
+      26,    20,   114,    26,    14,    15,    16,    25,    14,    15,
+      20,     3,     4,    23,    20,    16,    15,    23,    14,    15,
+      16,    21,    26,    23,    20,    98,     7,    25,    25,    15,
+      19,    25,    23,    28,    17,    28,    10,    27,    16,    16,
+      28,    16,     8,    15,    15,    21,    16,    10,    27,    17,
+      15,    18,     3,    15,    15,    28,    10,    15,    22,    28,
+       5,     4,    15,    22,    49,    21,    26,    22,    84,    11,
+      27,    19,    22,    22,    -1,    22,    -1,    -1,    22,    -1,
+      -1,    27,    34,    -1,    -1,    -1,    -1,    -1,    -1,    -1,
+      -1,    -1,    -1,    -1,    -1,    -1,    -1,    -1,    -1,    -1,
+      -1,    -1,    43
 };
 
 /* YYSTOS[STATE-NUM] -- The symbol kind of the accessing symbol of
@@ -592,40 +602,43 @@ static const yytype_int8 yycheck[] =
 static const yytype_int8 yystos[] =
 {
        0,     6,    33,    34,    35,    16,     0,     3,     4,    38,
-      53,    54,    34,    18,    26,    25,     4,     5,    39,    41,
-      55,    56,    53,     3,    15,    20,    36,    37,    41,    43,
-      44,    15,    40,    16,    26,     3,    15,    20,    25,    25,
-       7,    57,    58,    55,    28,    15,    42,    19,    23,    25,
-      28,    27,    17,    40,    28,    42,    16,    16,    16,     8,
-      60,    57,    15,    42,    21,    36,    16,    15,    10,    14,
-      15,    26,    45,    48,    51,    27,    15,    21,    17,    17,
-      22,    18,    11,    12,    13,     3,    45,    52,    22,    10,
-      26,    49,    16,    45,    46,    46,    47,    49,    59,    22,
-      46,    46,    23,    52,    27,    41,    46,    50,    22,    22,
-      23,    59,    19,    22,    22,    52,    23,    50,    27,    59,
-      22,    50
+      54,    55,    34,    18,    26,    25,     4,     5,    39,    41,
+      56,    57,    54,     3,    15,    20,    36,    37,    41,    43,
+      44,    15,    40,    16,    26,     3,     9,    15,    20,    25,
+      25,     7,    58,    59,    56,    28,    15,    42,    19,    23,
+      25,    28,    27,    17,    40,    10,    28,    42,    16,    16,
+      16,     8,    61,    58,    15,    21,    23,    21,    36,    16,
+      15,    10,    14,    15,    20,    26,    45,    46,    49,    52,
+      27,    15,    20,    15,    17,    17,    22,    18,    11,    12,
+      13,    42,     3,    28,    42,    45,    53,    22,    10,    28,
+      42,    26,    50,    16,    45,    47,    47,    48,    50,    60,
+      22,    47,    47,    15,    23,    53,    27,    41,    15,    47,
+      51,    22,    22,    23,    60,    19,    22,    22,    53,    23,
+      51,    27,    60,    22,    51
 };
 
 /* YYR1[RULE-NUM] -- Symbol kind of the left-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr1[] =
 {
        0,    32,    33,    34,    34,    35,    36,    36,    37,    38,
-      38,    39,    40,    41,    41,    41,    42,    42,    43,    43,
-      43,    43,    44,    45,    45,    46,    46,    47,    47,    48,
-      48,    49,    50,    50,    50,    51,    52,    52,    52,    53,
-      53,    54,    55,    55,    56,    56,    56,    57,    57,    58,
-      59,    59,    59,    60,    60,    60
+      38,    39,    40,    41,    41,    41,    41,    41,    42,    42,
+      42,    43,    43,    43,    43,    44,    45,    45,    45,    46,
+      46,    47,    47,    48,    48,    49,    49,    50,    51,    51,
+      51,    52,    53,    53,    53,    54,    54,    55,    56,    56,
+      57,    57,    57,    58,    58,    59,    60,    60,    60,    61,
+      61,    61
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr2[] =
 {
        0,     2,     5,     0,     2,     5,     3,     1,     3,     1,
-       6,     6,     3,     2,     4,     4,     0,     2,     1,     1,
-       3,     3,     1,     1,     1,     1,     1,     1,     1,     1,
-       1,     3,     0,     3,     2,     3,     0,     3,     2,     0,
-       2,     6,     0,     2,     6,     4,     6,     0,     2,     6,
-       0,     3,     2,     3,     4,     4
+       6,     6,     3,     2,     4,     3,     6,     5,     0,     2,
+       3,     1,     1,     3,     3,     1,     1,     1,     1,     3,
+       2,     1,     1,     1,     1,     1,     1,     3,     0,     3,
+       2,     3,     0,     3,     2,     0,     2,     6,     0,     2,
+       6,     4,     6,     0,     2,     6,     0,     3,     2,     3,
+       4,     4
 };
 
 
@@ -637,7 +650,8 @@ static const yytype_int8 yydprec[] =
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,     0,     0,     0
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0
 };
 
 /* YYMERGER[RULE-NUM] -- Index of merging function for rule #RULE-NUM.  */
@@ -648,7 +662,8 @@ static const yytype_int8 yymerger[] =
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,     0,     0,     0
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0
 };
 
 /* YYIMMEDIATE[RULE-NUM] -- True iff rule #RULE-NUM is not to be deferred, as
@@ -660,7 +675,8 @@ static const yybool yyimmediate[] =
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,     0,     0,     0
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0
 };
 
 /* YYCONFLP[YYPACT[STATE-NUM]] -- Pointer into YYCONFL of start of
@@ -671,25 +687,28 @@ static const yytype_int8 yyconflp[] =
 {
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,     1,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     3,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     1,
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     3,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
+       0,     0,     0,     5,     7,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
        0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,     0,     0,     0,     0,     0,     0,     0,
-       0,     0,     0,     0,     0,     0,     0
+       0,     0,     0
 };
 
 /* YYCONFL[I] -- lists of conflicting rule numbers, each terminated by
    0, pointed into by YYCONFLP.  */
 static const short yyconfl[] =
 {
-       0,    39,     0,    39,     0
+       0,    45,     0,    45,     0,    18,     0,    18,     0
 };
 
 
@@ -882,10 +901,11 @@ static const char *const yytname[] =
   "predicate_params", "predicate_param", "par_type", "array_var_type",
   "index_set", "basic_var_type", "int_literal_list",
   "basic_pred_param_type", "pred_param_type", "basic_literal_expr",
-  "basic_expr", "expr", "par_expr", "array_literal", "array_item_list",
-  "par_array_literal", "par_array_item_list", "par_decl_item_list",
-  "par_decl_item", "var_decl_item_list", "var_decl_item",
-  "constraint_item_list", "constraint_item", "args_list", "solve_item", YY_NULLPTR
+  "set_literal", "basic_expr", "expr", "par_expr", "array_literal",
+  "array_item_list", "par_array_literal", "par_array_item_list",
+  "par_decl_item_list", "par_decl_item", "var_decl_item_list",
+  "var_decl_item", "constraint_item_list", "constraint_item", "args_list",
+  "solve_item", YY_NULLPTR
 };
 
 static const char *
@@ -1116,7 +1136,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
   switch (yyrule)
     {
   case 2: /* model: predicate_item_list par_decl_item_list var_decl_item_list constraint_item_list solve_item  */
-#line 243 "parser.ypp"
+#line 267 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                {
         if(!(((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-4)].yystate.yysemantics.yyval.predicate_vector_attr))->empty()))
             for(auto elem : *((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-4)].yystate.yysemantics.yyval.predicate_vector_attr)))
@@ -1131,79 +1151,81 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
             for(auto elem : *((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.constraint_vector_attr)))
                 parsing_result->emplace_back(elem);
     }
-#line 1135 "parser.cpp"
+#line 1155 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 3: /* predicate_item_list: %empty  */
-#line 260 "parser.ypp"
+#line 284 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         vector<Predicate*>* v = new vector<Predicate*>;
         ((*yyvalp).predicate_vector_attr) = v;
     }
-#line 1144 "parser.cpp"
+#line 1164 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 4: /* predicate_item_list: predicate_item predicate_item_list  */
-#line 264 "parser.ypp"
+#line 288 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                         {       
         vector<Predicate*>* v = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.predicate_vector_attr);
         v->emplace(v->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.pred_attr));
         ((*yyvalp).predicate_vector_attr) = v;
     }
-#line 1154 "parser.cpp"
+#line 1174 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 5: /* predicate_item: PREDICATE VAR_PAR_IDENTIFIER OPEN_PARENT_SMALL predicate_params CLOSED_PARENT_SMALL  */
-#line 272 "parser.ypp"
+#line 296 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                                                         {
         Predicate* pred = new Predicate((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.str_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.pred_params_attr));
         ((*yyvalp).pred_attr) = pred;
     }
-#line 1163 "parser.cpp"
+#line 1183 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 6: /* predicate_params: predicate_param COMMA predicate_params  */
-#line 279 "parser.ypp"
+#line 303 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                              { 
         vector<PredicateParam*>* p = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.pred_params_attr);
         p->emplace(p->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.pred_param_attr));
         ((*yyvalp).pred_params_attr) = p; 
      }
-#line 1173 "parser.cpp"
+#line 1193 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 7: /* predicate_params: predicate_param  */
-#line 284 "parser.ypp"
+#line 308 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                       { 
         vector<PredicateParam*>* p = new vector<PredicateParam*>{(YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.pred_param_attr)};
         ((*yyvalp).pred_params_attr) = p; 
     }
-#line 1182 "parser.cpp"
+#line 1202 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 8: /* predicate_param: pred_param_type COLON VAR_PAR_IDENTIFIER  */
-#line 291 "parser.ypp"
+#line 315 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                              {
         
         PredicateParam* p = new PredicateParam((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.basic_pred_param_type_attr));
         ((*yyvalp).pred_param_attr) = p;
     }
-#line 1192 "parser.cpp"
+#line 1212 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 9: /* par_type: BASIC_PAR_TYPE  */
-#line 300 "parser.ypp"
+#line 324 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                   {
         if((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_par_type_attr) == BasicParType::INT)
             ((*yyvalp).par_type_attr) = new ParType(BasicParType::INT);
         else if((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_par_type_attr) == BasicParType::BOOL)
             ((*yyvalp).par_type_attr) = new ParType(BasicParType::BOOL);
+        else if((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_par_type_attr) == BasicParType::SETOFINT)
+            ((*yyvalp).par_type_attr) = new ParType(BasicParType::SETOFINT);
     }
-#line 1203 "parser.cpp"
+#line 1225 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 10: /* par_type: ARRAY OPEN_PARENT_MED index_set CLOSED_PARENT_MED OF BASIC_PAR_TYPE  */
-#line 306 "parser.ypp"
+#line 332 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                                          {
         if((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_par_type_attr) == BasicParType::INT){
             ParArrayType* p = new ParArrayType(BasicParType::INT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.int_attr));
@@ -1213,391 +1235,446 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
             ((*yyvalp).par_type_attr) = new ParType(p);
         }
     }
-#line 1217 "parser.cpp"
+#line 1239 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 11: /* array_var_type: ARRAY OPEN_PARENT_MED index_set CLOSED_PARENT_MED OF basic_var_type  */
-#line 319 "parser.ypp"
+#line 345 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                                         {
         ((*yyvalp).array_var_type_attr) = new ArrayVarType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.int_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_var_type_attr));
     }
-#line 1225 "parser.cpp"
+#line 1247 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 12: /* index_set: INT_LITERAL TWO_DOTS INT_LITERAL  */
-#line 326 "parser.ypp"
+#line 352 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                      { 
         if ((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.int_attr) != 1){
             yyerror("Error: first term in index set must be 1\n");
         }
         ((*yyvalp).int_attr) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.int_attr); }
-#line 1235 "parser.cpp"
+#line 1257 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 13: /* basic_var_type: VAR BASIC_PAR_TYPE  */
-#line 334 "parser.ypp"
+#line 360 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                        { ((*yyvalp).basic_var_type_attr) = new BasicVarType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_par_type_attr)); }
-#line 1241 "parser.cpp"
+#line 1263 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
   case 14: /* basic_var_type: VAR INT_LITERAL TWO_DOTS INT_LITERAL  */
-#line 335 "parser.ypp"
+#line 361 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                            { 
         IntRangeVarType* v = new IntRangeVarType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.int_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.int_attr));
         ((*yyvalp).basic_var_type_attr) = new BasicVarType(v); 
     }
-#line 1250 "parser.cpp"
+#line 1272 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 15: /* basic_var_type: VAR OPEN_PARENT_BIG int_literal_list CLOSED_PARENT_BIG  */
-#line 339 "parser.ypp"
-                                                             {
-        IntSetVarType* v = new IntSetVarType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.vector_of_int_attr));
+  case 15: /* basic_var_type: VAR OPEN_PARENT_BIG int_literal_list  */
+#line 365 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+                                           {
+        IntSetVarType* v = new IntSetVarType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.vector_of_int_attr));
         ((*yyvalp).basic_var_type_attr) = new BasicVarType(v);
     }
-#line 1259 "parser.cpp"
+#line 1281 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 16: /* int_literal_list: %empty  */
-#line 346 "parser.ypp"
+  case 16: /* basic_var_type: VAR SET OF INT_LITERAL TWO_DOTS INT_LITERAL  */
+#line 369 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+                                                  {
+        vector<int>* elems = new vector<int>;
+        for(int i = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.int_attr); i <= (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.int_attr); i++)
+            elems->push_back(i); 
+        SetVarType* v = new SetVarType(elems);
+        ((*yyvalp).basic_var_type_attr) = new BasicVarType(v); 
+    }
+#line 1293 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
+    break;
+
+  case 17: /* basic_var_type: VAR SET OF OPEN_PARENT_BIG int_literal_list  */
+#line 376 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+                                                  {
+        SetVarType* v = new SetVarType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.vector_of_int_attr));
+        ((*yyvalp).basic_var_type_attr) = new BasicVarType(v);
+    }
+#line 1302 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
+    break;
+
+  case 18: /* int_literal_list: %empty  */
+#line 383 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         vector<int>* v = new vector<int>;
         ((*yyvalp).vector_of_int_attr) = v;
     }
-#line 1268 "parser.cpp"
+#line 1311 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 17: /* int_literal_list: INT_LITERAL int_literal_list  */
-#line 350 "parser.ypp"
-                                  {
-        vector<int>* v = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.vector_of_int_attr);
-        v->emplace(((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.vector_of_int_attr))->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.int_attr));
+  case 19: /* int_literal_list: INT_LITERAL CLOSED_PARENT_BIG  */
+#line 387 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+                                   {
+        vector<int>* v = new vector<int>;
+        v->emplace(v->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.int_attr));
         ((*yyvalp).vector_of_int_attr) = v;
     }
-#line 1278 "parser.cpp"
+#line 1321 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 18: /* basic_pred_param_type: BASIC_PAR_TYPE  */
-#line 358 "parser.ypp"
+  case 20: /* int_literal_list: INT_LITERAL COMMA int_literal_list  */
+#line 392 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+                                        {
+        vector<int>* v = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.vector_of_int_attr);
+        v->emplace(((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.vector_of_int_attr))->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.int_attr));
+        ((*yyvalp).vector_of_int_attr) = v;
+    }
+#line 1331 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
+    break;
+
+  case 21: /* basic_pred_param_type: BASIC_PAR_TYPE  */
+#line 400 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                    {
         ((*yyvalp).basic_pred_param_type_attr) = new BasicPredParamType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_par_type_attr));
     }
-#line 1286 "parser.cpp"
+#line 1339 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 19: /* basic_pred_param_type: basic_var_type  */
-#line 361 "parser.ypp"
+  case 22: /* basic_pred_param_type: basic_var_type  */
+#line 403 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                      {
         ((*yyvalp).basic_pred_param_type_attr) = new BasicPredParamType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_var_type_attr));
     }
-#line 1294 "parser.cpp"
+#line 1347 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 20: /* basic_pred_param_type: INT_LITERAL TWO_DOTS INT_LITERAL  */
-#line 364 "parser.ypp"
+  case 23: /* basic_pred_param_type: INT_LITERAL TWO_DOTS INT_LITERAL  */
+#line 406 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                        {
         IntRangeVarType* t = new IntRangeVarType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.int_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.int_attr));
         ((*yyvalp).basic_pred_param_type_attr) = new BasicPredParamType(t);
     }
-#line 1303 "parser.cpp"
+#line 1356 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 21: /* basic_pred_param_type: OPEN_PARENT_BIG int_literal_list CLOSED_PARENT_BIG  */
-#line 368 "parser.ypp"
+  case 24: /* basic_pred_param_type: OPEN_PARENT_BIG int_literal_list CLOSED_PARENT_BIG  */
+#line 410 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                         {
         IntSetVarType* t = new IntSetVarType((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.vector_of_int_attr));
         ((*yyvalp).basic_pred_param_type_attr) = new BasicPredParamType(t);
     }
-#line 1312 "parser.cpp"
+#line 1365 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 22: /* pred_param_type: basic_pred_param_type  */
-#line 376 "parser.ypp"
+  case 25: /* pred_param_type: basic_pred_param_type  */
+#line 418 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                           { ((*yyvalp).basic_pred_param_type_attr) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_pred_param_type_attr);}
-#line 1318 "parser.cpp"
+#line 1371 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 23: /* basic_literal_expr: BOOL_LITERAL  */
-#line 382 "parser.ypp"
+  case 26: /* basic_literal_expr: BOOL_LITERAL  */
+#line 424 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                  { ((*yyvalp).basic_literal_expr_attr) = new BasicLiteralExpr((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.bool_attr)); }
-#line 1324 "parser.cpp"
+#line 1377 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 24: /* basic_literal_expr: INT_LITERAL  */
-#line 383 "parser.ypp"
+  case 27: /* basic_literal_expr: INT_LITERAL  */
+#line 425 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                   { ((*yyvalp).basic_literal_expr_attr) = new BasicLiteralExpr((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.int_attr)); }
-#line 1330 "parser.cpp"
+#line 1383 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 25: /* basic_expr: basic_literal_expr  */
-#line 387 "parser.ypp"
+  case 28: /* basic_literal_expr: set_literal  */
+#line 426 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+                  { ((*yyvalp).basic_literal_expr_attr) = new BasicLiteralExpr((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.set_literal_attr)); }
+#line 1389 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
+    break;
+
+  case 29: /* set_literal: INT_LITERAL TWO_DOTS INT_LITERAL  */
+#line 430 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+                                     {
+        SetRangeLiteral* v = new SetRangeLiteral((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.int_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.int_attr));
+        ((*yyvalp).set_literal_attr) = new SetLiteral(v); 
+    }
+#line 1398 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
+    break;
+
+  case 30: /* set_literal: OPEN_PARENT_BIG int_literal_list  */
+#line 434 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+                                       {
+        SetSetLiteral* v = new SetSetLiteral((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.vector_of_int_attr));
+        ((*yyvalp).set_literal_attr) = new SetLiteral(v);
+    }
+#line 1407 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
+    break;
+
+  case 31: /* basic_expr: basic_literal_expr  */
+#line 441 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                        { ((*yyvalp).basic_expr_attr) = new BasicExpr((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_literal_expr_attr)); }
-#line 1336 "parser.cpp"
+#line 1413 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 26: /* basic_expr: VAR_PAR_IDENTIFIER  */
-#line 388 "parser.ypp"
+  case 32: /* basic_expr: VAR_PAR_IDENTIFIER  */
+#line 442 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                          { ((*yyvalp).basic_expr_attr) = new BasicExpr((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str_attr)); }
-#line 1342 "parser.cpp"
+#line 1419 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 27: /* expr: basic_expr  */
-#line 392 "parser.ypp"
+  case 33: /* expr: basic_expr  */
+#line 446 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                {
         BasicExpr* b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_expr_attr);
         ((*yyvalp).expr_attr) = new Expr(b);
     }
-#line 1351 "parser.cpp"
+#line 1428 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 28: /* expr: array_literal  */
-#line 396 "parser.ypp"
+  case 34: /* expr: array_literal  */
+#line 450 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                     {
         ArrayLiteral* a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.array_literal_attr);
         ((*yyvalp).expr_attr) = new Expr(a);
     }
-#line 1360 "parser.cpp"
+#line 1437 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 29: /* par_expr: basic_literal_expr  */
-#line 403 "parser.ypp"
+  case 35: /* par_expr: basic_literal_expr  */
+#line 457 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                        {
         ((*yyvalp).par_expr_attr) = new ParExpr((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.basic_literal_expr_attr));
     }
-#line 1368 "parser.cpp"
+#line 1445 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 30: /* par_expr: par_array_literal  */
-#line 406 "parser.ypp"
+  case 36: /* par_expr: par_array_literal  */
+#line 460 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                        {
         ((*yyvalp).par_expr_attr) = new ParExpr((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.par_array_literal_attr));
     }
-#line 1376 "parser.cpp"
+#line 1453 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 31: /* array_literal: OPEN_PARENT_MED array_item_list CLOSED_PARENT_MED  */
-#line 412 "parser.ypp"
+  case 37: /* array_literal: OPEN_PARENT_MED array_item_list CLOSED_PARENT_MED  */
+#line 466 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                      { ((*yyvalp).array_literal_attr) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.array_literal_attr); }
-#line 1382 "parser.cpp"
+#line 1459 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 32: /* array_item_list: %empty  */
-#line 416 "parser.ypp"
+  case 38: /* array_item_list: %empty  */
+#line 470 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         ((*yyvalp).array_literal_attr) = new ArrayLiteral();
     }
-#line 1390 "parser.cpp"
+#line 1467 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 33: /* array_item_list: basic_expr COMMA array_item_list  */
-#line 419 "parser.ypp"
+  case 39: /* array_item_list: basic_expr COMMA array_item_list  */
+#line 473 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                        {
         ArrayLiteral* v = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.array_literal_attr);
         v->emplace(v->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.basic_expr_attr));
         ((*yyvalp).array_literal_attr) = v;
     }
-#line 1400 "parser.cpp"
+#line 1477 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 34: /* array_item_list: basic_expr array_item_list  */
-#line 424 "parser.ypp"
+  case 40: /* array_item_list: basic_expr array_item_list  */
+#line 478 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                  {
         ArrayLiteral* v = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.array_literal_attr);
         v->emplace(v->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.basic_expr_attr));
         ((*yyvalp).array_literal_attr) = v;
     }
-#line 1410 "parser.cpp"
+#line 1487 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 35: /* par_array_literal: OPEN_PARENT_MED par_array_item_list CLOSED_PARENT_MED  */
-#line 432 "parser.ypp"
+  case 41: /* par_array_literal: OPEN_PARENT_MED par_array_item_list CLOSED_PARENT_MED  */
+#line 486 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                          {
         ((*yyvalp).par_array_literal_attr) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.par_array_literal_attr);
     }
-#line 1418 "parser.cpp"
+#line 1495 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 36: /* par_array_item_list: %empty  */
-#line 438 "parser.ypp"
+  case 42: /* par_array_item_list: %empty  */
+#line 492 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         vector<BasicLiteralExpr*>* v = new vector<BasicLiteralExpr*>;
         ParArrayLiteral* p = new ParArrayLiteral(v); 
         ((*yyvalp).par_array_literal_attr) = p;
 
     }
-#line 1429 "parser.cpp"
+#line 1506 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 37: /* par_array_item_list: basic_literal_expr COMMA par_array_item_list  */
-#line 444 "parser.ypp"
+  case 43: /* par_array_item_list: basic_literal_expr COMMA par_array_item_list  */
+#line 498 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                    {
         ParArrayLiteral* p = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.par_array_literal_attr);
         p->elems->emplace(p->elems->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.basic_literal_expr_attr));
         ((*yyvalp).par_array_literal_attr) = p;
     }
-#line 1439 "parser.cpp"
+#line 1516 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 38: /* par_array_item_list: basic_literal_expr par_array_item_list  */
-#line 449 "parser.ypp"
+  case 44: /* par_array_item_list: basic_literal_expr par_array_item_list  */
+#line 503 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                              {
         ParArrayLiteral* p = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.par_array_literal_attr);
         p->elems->emplace(p->elems->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.basic_literal_expr_attr));
         ((*yyvalp).par_array_literal_attr) = p;
     }
-#line 1449 "parser.cpp"
+#line 1526 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 39: /* par_decl_item_list: %empty  */
-#line 458 "parser.ypp"
+  case 45: /* par_decl_item_list: %empty  */
+#line 512 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         vector<Parameter*>* v = new vector<Parameter*>;
         ((*yyvalp).parameter_vector_attr) = v;
     }
-#line 1458 "parser.cpp"
+#line 1535 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 40: /* par_decl_item_list: par_decl_item par_decl_item_list  */
-#line 462 "parser.ypp"
+  case 46: /* par_decl_item_list: par_decl_item par_decl_item_list  */
+#line 516 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                       {
         vector<Parameter*>* v = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.parameter_vector_attr);
         v->emplace(v->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.par_attr));
         ((*yyvalp).parameter_vector_attr) = v;
     }
-#line 1468 "parser.cpp"
+#line 1545 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 41: /* par_decl_item: par_type COLON VAR_PAR_IDENTIFIER EQUALS par_expr SEMICOLON  */
-#line 471 "parser.ypp"
+  case 47: /* par_decl_item: par_type COLON VAR_PAR_IDENTIFIER EQUALS par_expr SEMICOLON  */
+#line 525 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         ((*yyvalp).par_attr) = new Parameter((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-5)].yystate.yysemantics.yyval.par_type_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.str_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.par_expr_attr));
     }
-#line 1476 "parser.cpp"
+#line 1553 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 42: /* var_decl_item_list: %empty  */
-#line 476 "parser.ypp"
+  case 48: /* var_decl_item_list: %empty  */
+#line 530 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         vector<Variable*>* v = new vector<Variable*>;
         ((*yyvalp).variable_vector_attr) = v;
     }
-#line 1485 "parser.cpp"
+#line 1562 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 43: /* var_decl_item_list: var_decl_item var_decl_item_list  */
-#line 480 "parser.ypp"
+  case 49: /* var_decl_item_list: var_decl_item var_decl_item_list  */
+#line 534 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                        {
         vector<Variable*>* v = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.variable_vector_attr);
         v->emplace(v->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.variable_attr));
         ((*yyvalp).variable_vector_attr) = v;
     }
-#line 1495 "parser.cpp"
+#line 1572 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 44: /* var_decl_item: basic_var_type COLON VAR_PAR_IDENTIFIER EQUALS basic_expr SEMICOLON  */
-#line 489 "parser.ypp"
+  case 50: /* var_decl_item: basic_var_type COLON VAR_PAR_IDENTIFIER EQUALS basic_expr SEMICOLON  */
+#line 543 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                                         {
         BasicVar* v = new BasicVar((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-5)].yystate.yysemantics.yyval.basic_var_type_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.str_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.basic_expr_attr), false);
         ((*yyvalp).variable_attr) = new Variable(v);
     }
-#line 1504 "parser.cpp"
+#line 1581 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 45: /* var_decl_item: basic_var_type COLON VAR_PAR_IDENTIFIER SEMICOLON  */
-#line 493 "parser.ypp"
+  case 51: /* var_decl_item: basic_var_type COLON VAR_PAR_IDENTIFIER SEMICOLON  */
+#line 547 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                         {
         BasicVar* v = new BasicVar((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.basic_var_type_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.str_attr), false);
         ((*yyvalp).variable_attr) = new Variable(v);
     }
-#line 1513 "parser.cpp"
+#line 1590 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 46: /* var_decl_item: array_var_type COLON VAR_PAR_IDENTIFIER EQUALS array_literal SEMICOLON  */
-#line 497 "parser.ypp"
+  case 52: /* var_decl_item: array_var_type COLON VAR_PAR_IDENTIFIER EQUALS array_literal SEMICOLON  */
+#line 551 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                                              {
         ArrayVar* v = new ArrayVar((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-5)].yystate.yysemantics.yyval.array_var_type_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.str_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.array_literal_attr));
         ((*yyvalp).variable_attr) = new Variable(v);
     }
-#line 1522 "parser.cpp"
+#line 1599 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 47: /* constraint_item_list: %empty  */
-#line 503 "parser.ypp"
+  case 53: /* constraint_item_list: %empty  */
+#line 557 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         vector<Constraint*>* v = new vector<Constraint*>;
         ((*yyvalp).constraint_vector_attr) = v;
     }
-#line 1531 "parser.cpp"
+#line 1608 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 48: /* constraint_item_list: constraint_item constraint_item_list  */
-#line 507 "parser.ypp"
+  case 54: /* constraint_item_list: constraint_item constraint_item_list  */
+#line 561 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                           {
         vector<Constraint*>* v = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.constraint_vector_attr);
         v->emplace(v->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.constraint_attr));
         ((*yyvalp).constraint_vector_attr) = v;
     }
-#line 1541 "parser.cpp"
+#line 1618 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 49: /* constraint_item: CONSTRAINT VAR_PAR_IDENTIFIER OPEN_PARENT_SMALL args_list CLOSED_PARENT_SMALL SEMICOLON  */
-#line 515 "parser.ypp"
+  case 55: /* constraint_item: CONSTRAINT VAR_PAR_IDENTIFIER OPEN_PARENT_SMALL args_list CLOSED_PARENT_SMALL SEMICOLON  */
+#line 569 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                                                             {
         Constraint* c = new Constraint((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-4)].yystate.yysemantics.yyval.str_attr), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.args_list_attr));
         ((*yyvalp).constraint_attr) = c;
     }
-#line 1550 "parser.cpp"
+#line 1627 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 50: /* args_list: %empty  */
-#line 522 "parser.ypp"
+  case 56: /* args_list: %empty  */
+#line 576 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
     {
         ArgsList* a = new ArgsList();
         ((*yyvalp).args_list_attr) = a;
     }
-#line 1559 "parser.cpp"
+#line 1636 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 51: /* args_list: expr COMMA args_list  */
-#line 526 "parser.ypp"
+  case 57: /* args_list: expr COMMA args_list  */
+#line 580 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                            {
         ArgsList* a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.args_list_attr);
         a->emplace(((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.args_list_attr))->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.expr_attr));
         ((*yyvalp).args_list_attr) = a;
     }
-#line 1569 "parser.cpp"
+#line 1646 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 52: /* args_list: expr args_list  */
-#line 531 "parser.ypp"
+  case 58: /* args_list: expr args_list  */
+#line 585 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                      {
         ArgsList* a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.args_list_attr);
         a->emplace(((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.args_list_attr))->begin(), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.expr_attr));
         ((*yyvalp).args_list_attr) = a;
     }
-#line 1579 "parser.cpp"
+#line 1656 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 53: /* solve_item: SOLVE SOLVE_SATISFY SEMICOLON  */
-#line 539 "parser.ypp"
+  case 59: /* solve_item: SOLVE SOLVE_SATISFY SEMICOLON  */
+#line 593 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                   { ((*yyvalp).solve_attr) = new Solve(SolveType::ORDINARY); }
-#line 1585 "parser.cpp"
+#line 1662 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 54: /* solve_item: SOLVE SOLVE_MINIMIZE basic_expr SEMICOLON  */
-#line 540 "parser.ypp"
+  case 60: /* solve_item: SOLVE SOLVE_MINIMIZE basic_expr SEMICOLON  */
+#line 594 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                 { ((*yyvalp).solve_attr) = new Solve(SolveType::MINIMIZE, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.basic_expr_attr)); }
-#line 1591 "parser.cpp"
+#line 1668 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
-  case 55: /* solve_item: SOLVE SOLVE_MAXIMIZE basic_expr SEMICOLON  */
-#line 541 "parser.ypp"
+  case 61: /* solve_item: SOLVE SOLVE_MAXIMIZE basic_expr SEMICOLON  */
+#line 595 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
                                                 { ((*yyvalp).solve_attr) = new Solve(SolveType::MAXIMIZE, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.basic_expr_attr)); }
-#line 1597 "parser.cpp"
+#line 1674 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
     break;
 
 
-#line 1601 "parser.cpp"
+#line 1678 "/home/ubuntu/Desktop/AR/seminarski/src/parser.cpp"
 
       default: break;
     }
@@ -3120,6 +3197,6 @@ yypdumpstack (yyGLRStack* yystackp)
 
 
 
-#line 543 "parser.ypp"
+#line 597 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
 
  

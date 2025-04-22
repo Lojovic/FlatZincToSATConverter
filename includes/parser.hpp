@@ -30,8 +30,8 @@
    This special exception was added by the Free Software Foundation in
    version 2.2 of Bison.  */
 
-#ifndef YY_YY_PARSER_HPP_INCLUDED
-# define YY_YY_PARSER_HPP_INCLUDED
+#ifndef YY_YY_HOME_UBUNTU_DESKTOP_AR_SEMINARSKI_SRC_PARSER_HPP_INCLUDED
+# define YY_YY_HOME_UBUNTU_DESKTOP_AR_SEMINARSKI_SRC_PARSER_HPP_INCLUDED
 /* Debug traces.  */
 #ifndef YYDEBUG
 # define YYDEBUG 1
@@ -40,7 +40,7 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 15 "parser.ypp"
+#line 15 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
 
     #include <iostream>
     #include <vector>
@@ -48,9 +48,23 @@ extern int yydebug;
 
     using namespace std;
 
-    //TODO dodati ostale tipove
-    enum BasicParType{INT, BOOL};
-    using BasicLiteralExpr = variant<int, bool>;
+    enum BasicParType{INT, BOOL, SETOFINT};
+
+    struct SetRangeLiteral{
+        int left;
+        int right;
+        SetRangeLiteral(int left, int right):
+        left(left), right(right){}
+    };
+
+    struct SetSetLiteral{
+        vector<int>* elems;
+        SetSetLiteral(vector<int>* elems):
+        elems(elems){}
+    };
+
+    using SetLiteral = variant<SetRangeLiteral*, SetSetLiteral*>;
+    using BasicLiteralExpr = variant<int, bool, SetLiteral*>;
     using BasicExpr = variant<BasicLiteralExpr*, string*>;
 
     struct ParArrayType{
@@ -88,7 +102,15 @@ extern int yydebug;
         IntSetVarType(vector<int>* elems):
         elems(elems){}
     };
-    using BasicVarType = variant<BasicParType, IntRangeVarType*, IntSetVarType*>;
+
+    struct SetVarType{
+        vector<int>* elems;
+        SetVarType(vector<int>* elems):
+        elems(elems){}
+    };
+
+    using BasicVarType = variant<BasicParType, IntRangeVarType*, IntSetVarType*, 
+                                 SetVarType*>;
 
     struct ArrayVarType{
         int size;
@@ -172,7 +194,7 @@ extern int yydebug;
     extern vector<Item>* parsing_result;
 
 
-#line 176 "parser.hpp"
+#line 198 "/home/ubuntu/Desktop/AR/seminarski/src/parser.hpp"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -220,7 +242,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 205 "parser.ypp"
+#line 228 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
 
     std::string* str_attr;
     vector<Item>* items_attr;
@@ -250,8 +272,9 @@ union YYSTYPE
     vector<Predicate*>* predicate_vector_attr;
     vector<Parameter*>* parameter_vector_attr;
     vector<Constraint*>* constraint_vector_attr;
+    SetLiteral* set_literal_attr;
 
-#line 255 "parser.hpp"
+#line 278 "/home/ubuntu/Desktop/AR/seminarski/src/parser.hpp"
 
 };
 typedef union YYSTYPE YYSTYPE;
@@ -264,4 +287,4 @@ extern YYSTYPE yylval;
 
 int yyparse (void);
 
-#endif /* !YY_YY_PARSER_HPP_INCLUDED  */
+#endif /* !YY_YY_HOME_UBUNTU_DESKTOP_AR_SEMINARSKI_SRC_PARSER_HPP_INCLUDED  */

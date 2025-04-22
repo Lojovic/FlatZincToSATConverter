@@ -2,7 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include "parser.hpp"
-#include "Encoder.hpp"
+#include "encoder.hpp"
 
 extern int yyparse();
 extern FILE* yyin;

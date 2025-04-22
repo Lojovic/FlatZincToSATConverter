@@ -27,7 +27,7 @@ endif()
 add_custom_command(
     OUTPUT ${PARSER_SOURCE}
     OUTPUT ${PARSER_HEADER}
-    COMMAND ${BISON_EXECUTABLE} -o ${PARSER_SOURCE} ${PARSER_FILE}
+    COMMAND ${BISON_EXECUTABLE} -d -o ${PARSER_SOURCE} ${PARSER_FILE}
     DEPENDS ${PARSER_FILE}
 )
 
@@ -51,13 +51,13 @@ add_custom_target(
 set(SOURCES
     src/main.cpp
     ${PARSER_SOURCE}
-    src/Encoder.cpp
+    src/encoder.cpp
     ${LEXER_OUTPUT} 
 )
 
 set(HEADERS
     ${PARSER_HEADER}
-    includes/Encoder.hpp
+    includes/encoder.hpp
 )
 
 # Define executable target

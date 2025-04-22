@@ -14,8 +14,7 @@ using namespace std;
 
 "int"                       { yylval.basic_par_type_attr = BasicParType::INT; return BASIC_PAR_TYPE; }
 "bool"                      { yylval.basic_par_type_attr = BasicParType::BOOL; return BASIC_PAR_TYPE; }
-"set of int"                { yylval.basic_par_type_attr = BasicParType::BOOL; return BASIC_PAR_TYPE; }
-"-?[0-9]+\\.[.]-?[0-9]+"    { yylval.basic_par_type_attr = BasicParType::BOOL; return BASIC_PAR_TYPE; } 
+"set of int"                { yylval.basic_par_type_attr = BasicParType::SETOFINT; return BASIC_PAR_TYPE; }
 
 "array"         { return ARRAY; }
 "var"           { return VAR; }

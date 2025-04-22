@@ -10,7 +10,7 @@ int yylex();
 
 %debug
 %glr-parser
-%expect 2
+%expect 4
 
 %code requires{
     #include <iostream>
@@ -19,9 +19,23 @@ int yylex();
 
     using namespace std;
 
-    //TODO dodati ostale tipove
-    enum BasicParType{INT, BOOL};
-    using BasicLiteralExpr = variant<int, bool>;
+    enum BasicParType{INT, BOOL, SETOFINT};
+
+    struct SetRangeLiteral{
+        int left;
+        int right;
+        SetRangeLiteral(int left, int right):
+        left(left), right(right){}
+    };
+
+    struct SetSetLiteral{
+        vector<int>* elems;
+        SetSetLiteral(vector<int>* elems):
+        elems(elems){}
+    };
+
+    using SetLiteral = variant<SetRangeLiteral*, SetSetLiteral*>;
+    using BasicLiteralExpr = variant<int, bool, SetLiteral*>;
     using BasicExpr = variant<BasicLiteralExpr*, string*>;
 
     struct ParArrayType{
@@ -59,7 +73,15 @@ int yylex();
         IntSetVarType(vector<int>* elems):
         elems(elems){}
     };
-    using BasicVarType = variant<BasicParType, IntRangeVarType*, IntSetVarType*>;
+
+    struct SetVarType{
+        vector<int>* elems;
+        SetVarType(vector<int>* elems):
+        elems(elems){}
+    };
+
+    using BasicVarType = variant<BasicParType, IntRangeVarType*, IntSetVarType*, 
+                                 SetVarType*>;
 
     struct ArrayVarType{
         int size;
@@ -201,6 +223,7 @@ int yylex();
 %type<predicate_vector_attr> predicate_item_list;
 %type<parameter_vector_attr> par_decl_item_list;
 %type<constraint_vector_attr> constraint_item_list;
+%type<set_literal_attr> set_literal;
 
 %union{
     std::string* str_attr;
@@ -231,6 +254,7 @@ int yylex();
     vector<Predicate*>* predicate_vector_attr;
     vector<Parameter*>* parameter_vector_attr;
     vector<Constraint*>* constraint_vector_attr;
+    SetLiteral* set_literal_attr;
 }
 
 %%
@@ -302,6 +326,8 @@ par_type:
             $$ = new ParType(BasicParType::INT);
         else if($1 == BasicParType::BOOL)
             $$ = new ParType(BasicParType::BOOL);
+        else if($1 == BasicParType::SETOFINT)
+            $$ = new ParType(BasicParType::SETOFINT);
     }
     | ARRAY OPEN_PARENT_MED index_set CLOSED_PARENT_MED OF BASIC_PAR_TYPE{
         if($6 == BasicParType::INT){
@@ -336,8 +362,19 @@ basic_var_type:
         IntRangeVarType* v = new IntRangeVarType($2, $4);
         $$ = new BasicVarType(v); 
     }
-    | VAR OPEN_PARENT_BIG int_literal_list CLOSED_PARENT_BIG {
+    | VAR OPEN_PARENT_BIG int_literal_list {
         IntSetVarType* v = new IntSetVarType($3);
+        $$ = new BasicVarType(v);
+    }
+    | VAR SET OF INT_LITERAL TWO_DOTS INT_LITERAL {
+        vector<int>* elems = new vector<int>;
+        for(int i = $4; i <= $6; i++)
+            elems->push_back(i); 
+        SetVarType* v = new SetVarType(elems);
+        $$ = new BasicVarType(v); 
+    }
+    | VAR SET OF OPEN_PARENT_BIG int_literal_list {
+        SetVarType* v = new SetVarType($5);
         $$ = new BasicVarType(v);
     }
     ;
@@ -347,9 +384,14 @@ int_literal_list:
         vector<int>* v = new vector<int>;
         $$ = v;
     }
-    | INT_LITERAL int_literal_list{
-        vector<int>* v = $2;
-        v->emplace(($2)->begin(), $1);
+    | INT_LITERAL CLOSED_PARENT_BIG{
+        vector<int>* v = new vector<int>;
+        v->emplace(v->begin(), $1);
+        $$ = v;
+    }
+    | INT_LITERAL COMMA int_literal_list{
+        vector<int>* v = $3;
+        v->emplace(($3)->begin(), $1);
         $$ = v;
     }
     ;
@@ -381,6 +423,18 @@ pred_param_type:
 basic_literal_expr:
     BOOL_LITERAL { $$ = new BasicLiteralExpr($1); }
     | INT_LITERAL { $$ = new BasicLiteralExpr($1); }
+    | set_literal { $$ = new BasicLiteralExpr($1); }
+    ;
+
+set_literal:
+    INT_LITERAL TWO_DOTS INT_LITERAL {
+        SetRangeLiteral* v = new SetRangeLiteral($1, $3);
+        $$ = new SetLiteral(v); 
+    }
+    | OPEN_PARENT_BIG int_literal_list {
+        SetSetLiteral* v = new SetSetLiteral($2);
+        $$ = new SetLiteral(v);
+    }
     ;
 
 basic_expr:

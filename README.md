@@ -5,15 +5,15 @@ This project is a **Flatzinc to SAT converter**, built for a **course on Automat
 ## Features
 
 - **Converts Flatzinc to SAT**: The primary functionality of this project is converting a Flatzinc model into a SAT problem.
-- **Encoding Constraints**: Currently, the converter supports the encoding of most FlatZinc integer constraints.
-- **Supports Integer Range Variables**: The converter works with integer variables that fall within a defined range.
+- **Encoding Constraints**: Currently, the converter supports the encoding of most FlatZinc constraints.
+- **Supports different variable types**: The converter works with integer, bool and set variables.
 - **Solving CSPs**: The converter can also be used as a CSP solver, as it invokes a backend SAT solver (MiniSAT) and decodes it's output.
   
 ### Supported Constraints
 
 The list of FlatZinc builtin constraints can be found [here](https://docs.minizinc.dev/en/2.5.5/lib-flatzinc.html).
 
-Currently, all Integer FlatZinc builtins are supported, other than set_in.
+Currently, all FlatZinc builtins are supported, other than bool2int, set_lt, set_lt_reif, set_le and set_le_reif.
 
 
 ## Installation
