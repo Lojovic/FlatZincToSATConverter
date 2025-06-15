@@ -17,14 +17,14 @@ The list of FlatZinc builtin constraints can be found [here](https://docs.minizi
 
 ## Installation
 
-Dependencies needed are flex (version 2.6.4 or greater) and bison (version 3.8.2 or greater).
+Dependencies needed are flex (version 2.6.4 or greater), bison (version 3.8.2 or greater) and the minisat solver.
 
 To get started with this project, clone the repository and follow the steps below:
 
 ```bash
 
-git clone https://github.com/yourusername/flatzinc-to-sat.git
-cd flatzinc-to-sat
+git clone https://github.com/Lojovic/FlatZincToSATConverter
+cd FlatZincToSATConverter
 
 mkdir build
 cd build
@@ -40,7 +40,7 @@ To run this project run the following command, where input.fzn is an input FlatZ
 
 ```bash
 
-./flatzinc_to_sat input.fzn
+./flatzinc_to_sat path/to/input.fzn
 ```
 
 The file formula.cnf contains the SAT formula of the FlatZinc model
