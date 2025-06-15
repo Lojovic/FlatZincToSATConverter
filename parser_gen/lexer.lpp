@@ -35,7 +35,7 @@ using namespace std;
 [-]?0x[0-9A-Fa-f]+  { yylval.int_attr = strtol(yytext, NULL, 16); return INT_LITERAL; }
 [-]?0o[0-7]+        { yylval.int_attr = strtol(yytext, NULL, 8); return INT_LITERAL; }
 
-[A-Za-z_][A-Za-z0-9_]*      { yylval.str_attr = new string(strdup(yytext)); return VAR_PAR_IDENTIFIER; }
+[A-Za-z_][A-Za-z0-9_]*      { yylval.str_attr = new string(yytext); return VAR_PAR_IDENTIFIER; }
 
 
 "="         { return EQUALS; }

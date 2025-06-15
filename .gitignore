@@ -1,3 +1,5 @@
 build
 .vscode
 input1.fzn
+formula.cnf
+model.out

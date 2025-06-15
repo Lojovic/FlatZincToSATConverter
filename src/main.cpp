@@ -28,12 +28,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    Encoder encoder(*parsing_result);
+    Encoder encoder(*parsing_result, "../formula.cnf");
     auto clauses = encoder.encode_to_cnf();
 
     if(!encoder.unsat){
-        encoder.write_to_file("../formula.cnf");
-        encoder.run_minisat("../formula.cnf", "model.out");
+        encoder.write_to_file();
+        encoder.run_minisat("model.out");
         encoder.read_minisat_output("model.out");
     }
     // for(auto clause : clauses){

@@ -902,7 +902,7 @@ YY_RULE_SETUP
 case 19:
 YY_RULE_SETUP
 #line 38 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/lexer.lpp"
-{ yylval.str_attr = new string(strdup(yytext)); return VAR_PAR_IDENTIFIER; }
+{ yylval.str_attr = new string(yytext); return VAR_PAR_IDENTIFIER; }
 	YY_BREAK
 case 20:
 YY_RULE_SETUP

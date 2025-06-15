@@ -24,6 +24,10 @@ if(NOT FLEX_EXECUTABLE)
     message(FATAL_ERROR "flex not found")
 endif()
 
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -g -O1")
+# set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fsanitize=address")
+
+
 add_custom_command(
     OUTPUT ${PARSER_SOURCE}
     OUTPUT ${PARSER_HEADER}

@@ -124,6 +124,7 @@ extern int yydebug;
         string* name;
         BasicExpr* value;
         bool helper;
+        bool is_output = false;
         int id;
         BasicVar(BasicVarType* type, string* name, BasicExpr* value, bool helper):
         type(type), name(name), value(value), helper(helper){}
@@ -139,6 +140,7 @@ extern int yydebug;
         ArrayVarType* type;
         string* name;
         ArrayLiteral* value;
+        bool is_output = false;
         ArrayVar(ArrayVarType* type, string* name, ArrayLiteral* value):
         type(type), name(name), value(value){}
     };
@@ -185,16 +187,22 @@ extern int yydebug;
     };
     using Item = variant<Parameter*, Variable*, Constraint*, Solve*, Predicate*>;
 
-    template<typename T>
-    bool is(const Item& item) { return std::holds_alternative<T>(item);}
+    
+    struct Annotation{
+        string* name;
+        vector<variant<Annotation*, BasicLiteralExpr*>*>* args;  
 
-    template<typename T>
-    T as(const Item& item) { return std::get<T>(item); }
+        Annotation(string* name): name(name) {}
+        Annotation(string* name, vector<variant<Annotation*, BasicLiteralExpr*>*>* args):
+         name(name), args(args) {}
+    };
+    using AnnotationList = vector<Annotation*>*;
+    
 
     extern vector<Item>* parsing_result;
 
 
-#line 198 "/home/ubuntu/Desktop/AR/seminarski/src/parser.hpp"
+#line 206 "/home/ubuntu/Desktop/AR/seminarski/src/parser.hpp"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -242,7 +250,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 228 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+#line 242 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
 
     std::string* str_attr;
     vector<Item>* items_attr;
@@ -273,8 +281,12 @@ union YYSTYPE
     vector<Parameter*>* parameter_vector_attr;
     vector<Constraint*>* constraint_vector_attr;
     SetLiteral* set_literal_attr;
+    AnnotationList annotation_list_attr;
+    Annotation* annotation_attr;
+    vector<variant<Annotation*, BasicLiteralExpr*>*>* anno_list_attr;
+    variant<Annotation*, BasicLiteralExpr*>* ann_expr_attr;
 
-#line 278 "/home/ubuntu/Desktop/AR/seminarski/src/parser.hpp"
+#line 290 "/home/ubuntu/Desktop/AR/seminarski/src/parser.hpp"
 
 };
 typedef union YYSTYPE YYSTYPE;

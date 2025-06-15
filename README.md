@@ -13,7 +13,6 @@ This project is a **Flatzinc to SAT converter**, built for a **course on Automat
 
 The list of FlatZinc builtin constraints can be found [here](https://docs.minizinc.dev/en/2.5.5/lib-flatzinc.html).
 
-Currently, all FlatZinc builtins are supported, other than bool2int, set_lt, set_lt_reif, set_le and set_le_reif.
 
 
 ## Installation
