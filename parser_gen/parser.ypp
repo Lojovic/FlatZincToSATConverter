@@ -489,6 +489,10 @@ array_literal:
     ;
 
 array_item_list:
+    {
+          $$ = new ArrayLiteral();   
+    }
+    |
     basic_expr {
         ArrayLiteral* v = new ArrayLiteral();
         v->push_back($1);
@@ -647,7 +651,7 @@ args_list:
     ;
 
 solve_item:
-    SOLVE SOLVE_SATISFY SEMICOLON { $$ = new Solve(SolveType::ORDINARY); }
+    SOLVE annotations SOLVE_SATISFY SEMICOLON { $$ = new Solve(SolveType::ORDINARY); }
     | SOLVE SOLVE_MINIMIZE basic_expr SEMICOLON { $$ = new Solve(SolveType::MINIMIZE, $3); }
     | SOLVE SOLVE_MAXIMIZE basic_expr SEMICOLON { $$ = new Solve(SolveType::MAXIMIZE, $3); }
     ;
@@ -677,6 +681,7 @@ anno_list:
     ann_expr CLOSED_PARENT_SMALL {
         vector<variant<Annotation*, BasicLiteralExpr*>*>* v = new vector<variant<Annotation*, BasicLiteralExpr*>*>();
         v->push_back($1);
+        $$ = v;
     }
     | ann_expr COMMA anno_list{
         auto v = $3;

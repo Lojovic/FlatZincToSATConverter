@@ -30,8 +30,8 @@
    This special exception was added by the Free Software Foundation in
    version 2.2 of Bison.  */
 
-#ifndef YY_YY_HOME_UBUNTU_DESKTOP_AR_SEMINARSKI_SRC_PARSER_HPP_INCLUDED
-# define YY_YY_HOME_UBUNTU_DESKTOP_AR_SEMINARSKI_SRC_PARSER_HPP_INCLUDED
+#ifndef YY_YY_HOME_UBUNTU_DESKTOP_STUDIJE_MASTERRAD_FLATZINCTOSATCONVERTER_SRC_PARSER_HPP_INCLUDED
+# define YY_YY_HOME_UBUNTU_DESKTOP_STUDIJE_MASTERRAD_FLATZINCTOSATCONVERTER_SRC_PARSER_HPP_INCLUDED
 /* Debug traces.  */
 #ifndef YYDEBUG
 # define YYDEBUG 1
@@ -40,7 +40,7 @@
 extern int yydebug;
 #endif
 /* "%code requires" blocks.  */
-#line 15 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+#line 15 "/home/ubuntu/Desktop/Studije/MasterRad/FlatZincToSATConverter/parser_gen/parser.ypp"
 
     #include <iostream>
     #include <vector>
@@ -202,7 +202,7 @@ extern int yydebug;
     extern vector<Item>* parsing_result;
 
 
-#line 206 "/home/ubuntu/Desktop/AR/seminarski/src/parser.hpp"
+#line 206 "/home/ubuntu/Desktop/Studije/MasterRad/FlatZincToSATConverter/src/parser.hpp"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -250,7 +250,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 242 "/home/ubuntu/Desktop/AR/seminarski/parser_gen/parser.ypp"
+#line 242 "/home/ubuntu/Desktop/Studije/MasterRad/FlatZincToSATConverter/parser_gen/parser.ypp"
 
     std::string* str_attr;
     vector<Item>* items_attr;
@@ -286,7 +286,7 @@ union YYSTYPE
     vector<variant<Annotation*, BasicLiteralExpr*>*>* anno_list_attr;
     variant<Annotation*, BasicLiteralExpr*>* ann_expr_attr;
 
-#line 290 "/home/ubuntu/Desktop/AR/seminarski/src/parser.hpp"
+#line 290 "/home/ubuntu/Desktop/Studije/MasterRad/FlatZincToSATConverter/src/parser.hpp"
 
 };
 typedef union YYSTYPE YYSTYPE;
@@ -299,4 +299,4 @@ extern YYSTYPE yylval;
 
 int yyparse (void);
 
-#endif /* !YY_YY_HOME_UBUNTU_DESKTOP_AR_SEMINARSKI_SRC_PARSER_HPP_INCLUDED  */
+#endif /* !YY_YY_HOME_UBUNTU_DESKTOP_STUDIJE_MASTERRAD_FLATZINCTOSATCONVERTER_SRC_PARSER_HPP_INCLUDED  */

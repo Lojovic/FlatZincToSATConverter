@@ -1,8 +1,8 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include "parser.hpp"
-#include "encoder.hpp"
+#include "../includes/parser.hpp"
+#include "../includes/encoder.hpp"
 
 extern int yyparse();
 extern FILE* yyin;
@@ -13,10 +13,51 @@ vector<Item>* parsing_result = new vector<Item>;
 
 int main(int argc, char** argv) {
 
-    if (argc > 1) {
-        yyin = fopen(argv[1], "r");
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+
+    FileType file_type = DIMACS;
+    SolverType solver_type = MINISAT;
+    const char* input_file = nullptr;
+    bool export_proof;
+
+    for (int i = 1; i < argc; ++i) {
+        string arg(argv[i]);
+
+        if (arg.rfind("-solver=", 0) == 0) {
+            string solver = arg.substr(8);
+            if (solver == "minisat") solver_type = MINISAT;
+            else if (solver == "cadical") solver_type = CADICAL;
+            else if (solver == "glucose") solver_type = GLUCOSE;
+            else if (solver == "z3") solver_type = Z3;
+            else if (solver == "cvc5") solver_type = CVC5;
+            else {
+                cerr << "Unknown solver: " << solver << endl;
+                return 1;
+            }
+        } else if (arg.rfind("-file=", 0) == 0) {
+            string file = arg.substr(6);
+            if (file == "dimacs") file_type = DIMACS;
+            else if (file == "smt2") file_type = SMTLIB;
+            else {
+                cerr << "Unknown file type: " << file << endl;
+                return 1;
+            }
+        } else if (arg.rfind("-export-proof", 0) == 0) {
+            export_proof = true;
+        } else if (arg[0] != '-') {
+            input_file = argv[i]; 
+        } else {
+            cerr << "Unknown option: " << arg << endl;
+            return 1;
+        }
+    }
+
+    if (input_file) {
+        yyin = fopen(input_file, "r");
         if (!yyin) {
-            std::cerr << "Could not open file " << argv[1] << std::endl;
+            cerr << "Could not open file " << input_file << endl;
             return 1;
         }
     } else {
@@ -28,20 +69,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    Encoder encoder(*parsing_result, "../formula.cnf");
+    Encoder encoder(*parsing_result, file_type, solver_type, export_proof);
     auto clauses = encoder.encode_to_cnf();
 
-    if(!encoder.unsat){
-        encoder.write_to_file();
-        encoder.run_minisat("model.out");
-        encoder.read_minisat_output("model.out");
-    }
-    // for(auto clause : clauses){
-    //     for(auto literal : clause)
-    //         std::cout << (literal->pol ? "" : "-") << (literal->type == LiteralType::HELPER ? "q_" : "p_") 
-    //                   << literal->id << "_" << literal->val << " ";
-    //     std::cout << std::endl;
-    // }
+    encoder.write_to_file();
+    encoder.run_solver("model.out");
+    encoder.read_solver_output("model.out");
+    if(export_proof)
+        encoder.generate_proof();
+
+
 
     return 0;
 }

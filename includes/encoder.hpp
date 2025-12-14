@@ -13,11 +13,16 @@
 #include <memory>
 #include <algorithm>
 #include <set>
+#include <unordered_set>
+#include <sstream>
+#include <filesystem>
 
 
 using namespace std;
 
-enum LiteralType{ORDER, BOOL_VARIABLE, HELPER, DIRECT, SET_ELEM};
+enum LiteralType {ORDER, BOOL_VARIABLE, HELPER, DIRECT, SET_ELEM};
+enum FileType {DIMACS, SMTLIB};
+enum SolverType {MINISAT, CADICAL, GLUCOSE, Z3, CVC5};
 
 struct Literal{
     LiteralType type;
@@ -27,6 +32,10 @@ struct Literal{
     Literal(LiteralType type, int id, bool pol, int val):
     type(type), id(id), pol(pol), val(val){}
 };
+
+using LiteralPtr = shared_ptr<Literal>;
+using Clause = vector<LiteralPtr>;
+using CNF = vector<Clause>; 
 
 struct tuple_hash {
     template <typename T1, typename T2, typename T3>
@@ -38,27 +47,46 @@ struct tuple_hash {
     }
 };
 
+struct substitution_map_hash {
+    std::size_t operator()(const std::tuple<int, int, int, int>& t) const noexcept {
+        const auto& [a, b, c, d] = t;
+
+        std::size_t h1 = std::hash<int>{}(a);
+        std::size_t h2 = std::hash<int>{}(b);
+        std::size_t h3 = std::hash<int>{}(c);
+        std::size_t h4 = std::hash<int>{}(d);
+
+        std::size_t seed = h1;
+        seed ^= h2 + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= h3 + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= h4 + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+
+        return seed;
+    }
+};
+
 
 class Encoder {
 public:
-    Encoder(const vector<Item>& items, const string& file);
-    vector<vector<shared_ptr<Literal>>> encode_to_cnf();
+    Encoder(const vector<Item>& items, const FileType fileType, const SolverType solverType, const bool export_proof);
+    CNF encode_to_cnf();
     void write_to_file();
-    void run_minisat(const string &outputFile);
-    void read_minisat_output(const string &outputFile);
+    void run_solver(const string &outputFile);
+    void read_solver_output(const string &outputFile);
+    void generate_proof();
 
     bool unsat = false;
 
 private:
 
-    std::shared_ptr<Literal> make_literal(LiteralType type, int id, bool pol, int val) {
-        return std::make_shared<Literal>(type, id, pol, val);
+    LiteralPtr make_literal(LiteralType type, int id, bool pol, int val) {
+        return make_shared<Literal>(type, id, pol, val);
     }
 
     void cleanup_variant(BasicVarType& var) {
-        std::visit([](auto&& arg) {
-            using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_pointer_v<T>) {
+        visit([](auto&& arg) {
+            using T = decay_t<decltype(arg)>;
+            if constexpr (is_pointer_v<T>) {
                 delete arg; 
             }
         }, var);
@@ -84,144 +112,199 @@ private:
         allocated_arrays.clear();
     }
 
-    vector<vector<shared_ptr<Literal>>> cnf_clauses;
+    CNF cnf_clauses;
     const vector<Item>& items;
     unordered_map<string, Parameter*> parameter_map;
     unordered_map<string, Variable*> variable_map;
     unordered_map<string, Variable*> array_map; 
     unordered_map<int, Variable*> id_map; 
     unordered_map<tuple<LiteralType, int, int>, int, tuple_hash> literal_to_num;
-    unordered_map<int, shared_ptr<Literal>> num_to_literal;
+    unordered_map<int, LiteralPtr> num_to_literal;
     unordered_map<int, set<int>> set_variable_map;
     set<ArrayVar*> array_set;
     vector<BasicVar*> helper_vars;
     vector<ArrayLiteral*> allocated_arrays;
-    string fileName;
+    FileType file_type;
+    SolverType solver_type;
+
+    bool export_proof = false;
+    ofstream trivial_encoding_vars;
+    ofstream trivial_encoding_constraints;
+    ofstream trivial_encoding_domains;
+    ofstream connection_formula;
+    bool isUF = false;
+    bool isLIA = false;
+    bool isNIA = false;
+    bool isBV = false;
+    int bv_left = numeric_limits<int>::max(), bv_right = numeric_limits<int>::min();
+    CNF definition_clauses;
+    CNF sat_dom_clauses;
+    CNF sat_constraint_clauses;
+    void write_lit_definition_clauses_smt_subspace(LiteralPtr lit);
+    void write_lit_definition_clauses_sat_subspace(LiteralPtr lit);
+    void write_lit_definition_clauses_fun(LiteralPtr lit, bool should_define_fun);
+    void write_definition_clauses();
+    void write_sat_constraint_clauses();
+    void write_sat_dom_clauses();
+    vector<BasicVar *> set_vars;
+    vector<pair<string, string>> set_in_pairs;
+    void handle_set_vars();
+    void handle_set_in_constraints();
+    int next_array = 1;
+    bool is2step = false;
+    ofstream connection2step;
+    ofstream domains2step;
+    ofstream constraints2step1;
+    ofstream constraints2step2;
+    ofstream sat_dom;
+    ofstream sat_constraints;
+    ofstream sat_smt_funs;
+    ofstream smt_sat_funs;
+    ofstream smt_step1_funs;
+    ofstream left_total;
+    ofstream left_total_step1;
+    ofstream right_total;
+    ofstream smt_subspace;
+    ofstream sat_subspace;
+    void flush_buffers();
+    set<string*> encoded2step;
+    int next_constraint_num = 1;
+    unordered_set<int> constraint2step_set;
+    unordered_map<int, CNF> helper_map;
+    unordered_set<LiteralPtr> visited_lits;
+    int sub_index1 = -1;
+    int sub_index2 = -1;
+    unordered_map<tuple<int, int, int, int>, BasicVar*, substitution_map_hash> encoded_substitutions;
 
     int next_dimacs_num = 1;
     int next_var_id = 1; 
     int next_helper_id = 1;
     int clause_num = 0; 
 
-    void declare_unsat();
+    void declare_unsat(CNF &cnf_clauses);
+    void generate_proof2step();
 
-    void write_clauses_to_file(vector<vector<shared_ptr<Literal>>>& cnf_clauses);
-    ArrayLiteral* get_array(Constraint &constr, int ind);
+    void write_clauses_to_dimacs_file(CNF &cnf_clauses);
+    void write_clauses_to_smtlib_file(CNF &cnf_clauses);
+    ArrayLiteral *get_array(Constraint &constr, int ind);
     BasicLiteralExpr* get_const(Constraint &constr, int ind);
     SetLiteral* get_set_from_array(const ArrayLiteral &a, int ind);
     int get_int_from_array(const ArrayLiteral &a, int ind);
     bool get_bool_from_array(const ArrayLiteral &a, int ind);
     BasicVar *get_var_from_array(const ArrayLiteral &a, int ind);
     vector<int> *get_set_elems(const BasicVar &var);
+    void encode_trivial_int(string name);
     int get_variable_id(const string &var_name);
-    void encode_parameter(Parameter& param, vector<vector<shared_ptr<Literal>>>& cnf_clauses);
-    void encode_variable(Variable& var, vector<vector<shared_ptr<Literal>>>& cnf_clauses);
-    BasicVar* encode_int_range_helper_variable(const int left, const int right, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    BasicVar *encode_bool_helper_variable(vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_direct(const BasicVar &var, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    BasicVar *encode_param_as_var(Parameter &param, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    BasicVar *get_var(Constraint &constr, int ind, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_constraint(Constraint &constr, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
+    void encode_parameter(Parameter& param, CNF& cnf_clauses);
+    void encode_variable(Variable& var, CNF& cnf_clauses);
+    BasicVar* encode_int_range_helper_variable(const int left, const int right, CNF &cnf_clauses);
+    BasicVar *encode_bool_helper_variable(CNF &cnf_clauses);
+    void encode_direct(const BasicVar &var, CNF &cnf_clauses);
+    BasicVar *encode_param_as_var(Parameter &param, CNF &cnf_clauses);
+    BasicVar *get_var(Constraint &constr, int ind, CNF &cnf_clauses);
+    void encode_constraint(Constraint &constr, CNF &cnf_clauses);
 
-    bool encode_primitive_comparison_minus(const BasicVar &a, const BasicVar &b, int c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    bool encode_primitive_comparison_plus(const BasicVar &a, const BasicVar &b, int c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void reify(vector<vector<shared_ptr<Literal>>>& temp_clauses, const BasicVar& r, vector<vector<shared_ptr<Literal>>>& cnf_clauses);
-    void impify(vector<vector<shared_ptr<Literal>>> &temp_clauses, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
+    bool encode_primitive_comparison_minus(const BasicVar &a, const BasicVar &b, int c, CNF &cnf_clauses);
+    bool encode_primitive_comparison_plus(const BasicVar &a, const BasicVar &b, int c, CNF &cnf_clauses);
+    void reify(CNF& temp_clauses, const BasicVar& r, CNF& cnf_clauses);
+    void impify(CNF &temp_clauses, const BasicVar &r, CNF &cnf_clauses);
 
-    void encode_array_int_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_array_int_maximum(const BasicVar &m, const ArrayLiteral &x, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_array_int_minimum(const BasicVar &m, const ArrayLiteral &x, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_array_var_int_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_abs(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_div(const BasicVar &a, const BasicVar &b, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_eq(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_eq_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_eq_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_le(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_le_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_le_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_substitution(const BasicVar &var, const BasicVar &var1, const int coef1, const BasicVar &var2, const int coef2, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_eq(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_eq_reif(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_eq_imp(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_le(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_le_reif(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_le_imp(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_ne(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_ne_reif(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lin_ne_imp(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lt(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lt_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_lt_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_max(const BasicVar &a, const BasicVar &b, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_min(const BasicVar &a, const BasicVar &b, const BasicVar& c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_mod(const BasicVar &a, const BasicVar &b, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_ne(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_ne_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_ne_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_plus(const BasicVar &a, const BasicVar &b, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_pow_nonnegative(const BasicVar &a, const BasicVar &b, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_pow(const BasicVar &a, const BasicVar &b, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_times_nonnegative(const BasicVar &a, const BasicVar &b, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_int_times(const BasicVar &a, const BasicVar &b, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_in(const BasicVar &x, const BasicLiteralExpr &S, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
+    void encode_array_int_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, CNF &cnf_clauses);
+    void encode_array_int_maximum(const BasicVar &m, const ArrayLiteral &x, CNF &cnf_clauses);
+    void encode_array_int_minimum(const BasicVar &m, const ArrayLiteral &x, CNF &cnf_clauses);
+    void encode_array_var_int_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, CNF &cnf_clauses);
+    void encode_int_abs(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_int_div(const BasicVar &a, const BasicVar &b, const BasicVar &c, CNF &cnf_clauses);
+    void encode_int_eq(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_int_eq_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_eq_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_le(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_int_le_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_le_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_substitution(const BasicVar &var, const BasicVar &var1, const int coef1, const BasicVar &var2, const int coef2, CNF &cnf_clauses);
+    void encode_int_lin_eq(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, CNF &cnf_clauses);
+    void encode_int_lin_eq_reif(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_lin_eq_imp(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_lin_le(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, CNF &cnf_clauses);
+    void encode_int_lin_le_reif(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_lin_le_imp(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_lin_ne(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, CNF &cnf_clauses);
+    void encode_int_lin_ne_reif(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_lin_ne_imp(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_lt(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_int_lt_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_lt_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_max(const BasicVar &a, const BasicVar &b, const BasicVar &c, CNF &cnf_clauses);
+    void encode_int_min(const BasicVar &a, const BasicVar &b, const BasicVar& c, CNF &cnf_clauses);
+    void encode_int_mod(const BasicVar &a, const BasicVar &b, const BasicVar &c, CNF &cnf_clauses);
+    void encode_int_ne(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_int_ne_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_ne_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_int_plus(const BasicVar &a, const BasicVar &b, const BasicVar &c, CNF &cnf_clauses);
+    void encode_int_pow_nonnegative(const BasicVar &a, const BasicVar &b, const BasicVar &c, CNF &cnf_clauses);
+    void encode_int_pow(const BasicVar &a, const BasicVar &b, const BasicVar &c, CNF &cnf_clauses);
+    void encode_int_times_nonnegative(const BasicVar &a, const BasicVar &b, const BasicVar &c, CNF &cnf_clauses);
+    void encode_int_times(const BasicVar &a, const BasicVar &b, const BasicVar &c, CNF &cnf_clauses);
+    void encode_set_in(const BasicVar &x, const BasicLiteralExpr &S, CNF &cnf_clauses);
 
-    void encode_array_bool_and(const ArrayLiteral &as, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_array_bool_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_array_bool_or(const ArrayLiteral &as, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_array_bool_xor(const ArrayLiteral &as, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_array_var_bool_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool2int(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_and(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_clause(const ArrayLiteral &as, const ArrayLiteral &bs, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_eq(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_eq_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_eq_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_le(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_le_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_le_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_substitution(const BasicVar &x, const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_lin_eq(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_lin_le(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_lt(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_lt_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_lt_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_not(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_or(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_xor(const BasicVar &a, const BasicVar &b, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_bool_xor(const BasicVar &a, const BasicVar &b, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
+    void encode_array_bool_and(const ArrayLiteral &as, const BasicVar &r, CNF &cnf_clauses);
+    void encode_array_bool_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, CNF &cnf_clauses);
+    void encode_array_bool_or(const ArrayLiteral &as, const BasicVar &r, CNF &cnf_clauses);
+    void encode_array_bool_xor(const ArrayLiteral &as, CNF &cnf_clauses);
+    void encode_array_var_bool_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, CNF &cnf_clauses);
+    void encode_bool2int(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_bool_and(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_clause(const ArrayLiteral &as, const ArrayLiteral &bs, CNF &cnf_clauses);
+    void encode_bool_eq(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_bool_eq_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_eq_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_le(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_bool_le_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_le_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_substitution(const BasicVar &x, const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, CNF &cnf_clauses);
+    void encode_bool_lin_eq(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, CNF &cnf_clauses);
+    void encode_bool_lin_le(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, CNF &cnf_clauses);
+    void encode_bool_lt(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_bool_lt_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_lt_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_not(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
+    void encode_bool_or(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_xor(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void encode_bool_xor(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
 
-    void encode_array_set_element(const BasicVar &b, const ArrayLiteral &as, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_array_var_set_element(const BasicVar &b, const ArrayLiteral &as, const BasicVar &c, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_substitution(const BasicVar &x, const BasicVar &x1, int val1, int val2, int S_id, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_card(const BasicVar &S, int x, int x_is, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_card(const BasicVar &S, const BasicVar &x, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_diff(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_eq(const BasicVar &x, const BasicVar &y, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_eq_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_eq_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_in(const BasicVar &x, const BasicVar &S, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_in_reif(const BasicVar &x, const BasicLiteralExpr &S1, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_in_imp(const BasicVar &x, const BasicVar &S, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_in_reif(const BasicVar &x, const BasicVar &S, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_in_imp(const BasicVar &x, const BasicLiteralExpr &S1, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_ne(const BasicVar &x, const BasicVar &y, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_ne_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_ne_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_intersect(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void set_max(const BasicVar &x, const BasicVar &set, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_le(const BasicVar &x, const BasicVar &y, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_le_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_lt(const BasicVar &x, const BasicVar &y, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_lt_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_subset(const BasicVar &x, const BasicVar &y, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_subset_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_subset_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_superset(const BasicVar &x, const BasicVar &y, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_superset_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_superset_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_symdiff(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
-    void encode_set_union(const BasicVar &x, const BasicVar &y, const BasicVar &r, vector<vector<shared_ptr<Literal>>> &cnf_clauses);
+    bool check_if_val_in_domain(const vector<int> &elems, int val);
+
+    void encode_array_set_element(const BasicVar &b, const ArrayLiteral &as, const BasicVar &c, CNF &cnf_clauses);
+    void encode_array_var_set_element(const BasicVar &b, const ArrayLiteral &as, const BasicVar &c, CNF &cnf_clauses);
+    void encode_set_substitution(const BasicVar &x, const BasicVar &x1, int val1, int val2, int S_id, CNF &cnf_clauses);
+    void encode_set_card(const BasicVar &S, int x, int x_is, CNF &cnf_clauses);
+    void encode_set_card(const BasicVar &S, const BasicVar &x, CNF &cnf_clauses);
+    void encode_set_diff(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_eq(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
+    void encode_set_eq_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_eq_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_in(const BasicVar &x, const BasicVar &S, CNF &cnf_clauses);
+    void encode_set_in_reif(const BasicVar &x, const BasicLiteralExpr &S1, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_in_imp(const BasicVar &x, const BasicVar &S, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_in_reif(const BasicVar &x, const BasicVar &S, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_in_imp(const BasicVar &x, const BasicLiteralExpr &S1, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_ne(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
+    void encode_set_ne_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_ne_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_intersect(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void set_max(const BasicVar &x, const BasicVar &set, CNF &cnf_clauses);
+    void encode_set_le(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
+    void encode_set_le_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_lt(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
+    void encode_set_lt_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_subset(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
+    void encode_set_subset_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_subset_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_superset(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
+    void encode_set_superset_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_superset_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_symdiff(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_union(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
 };
 
 #endif

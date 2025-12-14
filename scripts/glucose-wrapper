@@ -1,0 +1,17 @@
+#!/bin/bash
+# Usage: glucose-wrapper input.cnf output.txt
+
+TMPFILE=$(mktemp)
+glucose "$1" "$TMPFILE" > /dev/null
+STATUS=$?
+
+if [ $STATUS -eq 10 ]; then
+    echo "SAT" > "$2"
+    cat "$TMPFILE" >> "$2"
+elif [ $STATUS -eq 20 ]; then
+    echo "UNSAT" > "$2"
+else
+    echo "UNKNOWN" > "$2"
+fi
+
+rm -f "$TMPFILE"
