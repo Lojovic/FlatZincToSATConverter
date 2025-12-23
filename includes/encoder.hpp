@@ -142,6 +142,7 @@ private:
     CNF sat_constraint_clauses;
     void write_lit_definition_clauses_smt_subspace(LiteralPtr lit);
     void write_lit_definition_clauses_sat_subspace(LiteralPtr lit);
+    set<LiteralPtr> todo_lits;
     void write_lit_definition_clauses_fun(LiteralPtr lit, bool should_define_fun);
     void write_definition_clauses();
     void write_sat_constraint_clauses();
@@ -165,16 +166,24 @@ private:
     ofstream left_total_step1;
     ofstream right_total;
     ofstream smt_subspace;
+    ofstream smt_subspace_step1;
     ofstream sat_subspace;
     void flush_buffers();
     set<string*> encoded2step;
     int next_constraint_num = 1;
     unordered_set<int> constraint2step_set;
     unordered_map<int, CNF> helper_map;
-    unordered_set<LiteralPtr> visited_lits;
+    unordered_set<int> visited_lits;
+    unordered_set<int> visited_lits1;
     int sub_index1 = -1;
     int sub_index2 = -1;
     unordered_map<tuple<int, int, int, int>, BasicVar*, substitution_map_hash> encoded_substitutions;
+
+    int sat_subspace_num = 1;
+    int smt_subspace_num = 1;
+    int smt_sat_rel_num = 1;
+    int smt_subspace_step1_num = 1;
+    int smt_subspace_step2_num = 1;
 
     int next_dimacs_num = 1;
     int next_var_id = 1; 
@@ -197,7 +206,7 @@ private:
     int get_variable_id(const string &var_name);
     void encode_parameter(Parameter& param, CNF& cnf_clauses);
     void encode_variable(Variable& var, CNF& cnf_clauses);
-    BasicVar* encode_int_range_helper_variable(const int left, const int right, CNF &cnf_clauses);
+    BasicVar* encode_int_range_helper_variable(const int left, const int right, CNF &cnf_clauses, bool is2step_var = false);
     BasicVar *encode_bool_helper_variable(CNF &cnf_clauses);
     void encode_direct(const BasicVar &var, CNF &cnf_clauses);
     BasicVar *encode_param_as_var(Parameter &param, CNF &cnf_clauses);
@@ -207,6 +216,7 @@ private:
     bool encode_primitive_comparison_minus(const BasicVar &a, const BasicVar &b, int c, CNF &cnf_clauses);
     bool encode_primitive_comparison_plus(const BasicVar &a, const BasicVar &b, int c, CNF &cnf_clauses);
     void reify(CNF& temp_clauses, const BasicVar& r, CNF& cnf_clauses);
+    void reify_helper(CNF &temp_clauses, const LiteralPtr &r, CNF &cnf_clauses);
     void impify(CNF &temp_clauses, const BasicVar &r, CNF &cnf_clauses);
 
     void encode_array_int_element(const BasicVar &b, const ArrayLiteral &as, BasicVar &c, CNF &cnf_clauses);
@@ -222,6 +232,8 @@ private:
     void encode_int_le_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
     void encode_int_le_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
     void encode_substitution(const BasicVar &var, const BasicVar &var1, const int coef1, const BasicVar &var2, const int coef2, CNF &cnf_clauses);
+    void lin_le_2args(const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, int c, CNF &cnf_clauses);
+    void lin_le_3args(const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, const BasicVar &x3, int coef3, int c, CNF &cnf_clauses);
     void encode_int_lin_eq(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, CNF &cnf_clauses);
     void encode_int_lin_eq_reif(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, CNF &cnf_clauses);
     void encode_int_lin_eq_imp(const ArrayLiteral &coefs, const ArrayLiteral &vars, int c, const BasicVar &r, CNF &cnf_clauses);
