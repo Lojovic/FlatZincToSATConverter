@@ -136,6 +136,8 @@ private:
     bool isLIA = false;
     bool isNIA = false;
     bool isBV = false;
+    bool needOnes = false;
+    bool needModDiv = false;
     int bv_left = numeric_limits<int>::max(), bv_right = numeric_limits<int>::min();
     CNF definition_clauses;
     CNF sat_dom_clauses;
@@ -149,8 +151,12 @@ private:
     void write_sat_dom_clauses();
     vector<BasicVar *> set_vars;
     vector<pair<string, string>> set_in_pairs;
+    vector<tuple<string, string, string>> set_in_reif_pairs;
+    vector<tuple<string, string, string>> set_in_imp_pairs;
     void handle_set_vars();
     void handle_set_in_constraints();
+    void write_ones(ofstream &proof_file);
+    void write_mod_div(ofstream &proof_file);
     int next_array = 1;
     bool is2step = false;
     ofstream connection2step;
@@ -191,6 +197,7 @@ private:
     int clause_num = 0; 
 
     void declare_unsat(CNF &cnf_clauses);
+    void set_bv_limits();
     void generate_proof2step();
 
     void write_clauses_to_dimacs_file(CNF &cnf_clauses);
@@ -288,8 +295,7 @@ private:
 
     void encode_array_set_element(const BasicVar &b, const ArrayLiteral &as, const BasicVar &c, CNF &cnf_clauses);
     void encode_array_var_set_element(const BasicVar &b, const ArrayLiteral &as, const BasicVar &c, CNF &cnf_clauses);
-    void encode_set_substitution(const BasicVar &x, const BasicVar &x1, int val1, int val2, int S_id, CNF &cnf_clauses);
-    void encode_set_card(const BasicVar &S, int x, int x_is, CNF &cnf_clauses);
+    void encode_set_substitution(const BasicVar &x, const BasicVar &x1, int val1, int val2, const BasicVar& S, CNF &cnf_clauses);
     void encode_set_card(const BasicVar &S, const BasicVar &x, CNF &cnf_clauses);
     void encode_set_diff(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
     void encode_set_eq(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
