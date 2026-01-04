@@ -138,6 +138,7 @@ private:
     bool isBV = false;
     bool needOnes = false;
     bool needModDiv = false;
+    bool needLex = false;
     int bv_left = numeric_limits<int>::max(), bv_right = numeric_limits<int>::min();
     CNF definition_clauses;
     CNF sat_dom_clauses;
@@ -157,6 +158,7 @@ private:
     void handle_set_in_constraints();
     void write_ones(ofstream &proof_file);
     void write_mod_div(ofstream &proof_file);
+    void write_lex(ofstream &proof_file);
     int next_array = 1;
     bool is2step = false;
     ofstream connection2step;
@@ -313,8 +315,10 @@ private:
     void set_max(const BasicVar &x, const BasicVar &set, CNF &cnf_clauses);
     void encode_set_le(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
     void encode_set_le_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_le_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
     void encode_set_lt(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
     void encode_set_lt_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
+    void encode_set_lt_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
     void encode_set_subset(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
     void encode_set_subset_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
     void encode_set_subset_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);

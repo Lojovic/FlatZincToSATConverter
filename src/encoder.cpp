@@ -53,7 +53,7 @@ void Encoder::set_bv_limits(){
                         if(holds_alternative<SetLiteral*>(basic_literal_expr)){
                             auto set_lit = *get<SetLiteral*>(basic_literal_expr);
 
-                            int left, right;
+                            int left = numeric_limits<int>::max(), right = numeric_limits<int>::min();
 
                             if(holds_alternative<SetRangeLiteral*>(set_lit)){
                                 auto set_range_lit = *get<SetRangeLiteral*>(set_lit);
@@ -61,8 +61,10 @@ void Encoder::set_bv_limits(){
                                 right = set_range_lit.right;
                             } else {
                                 auto set_set_lit = *get<SetSetLiteral*>(set_lit);
-                                left = (*set_set_lit.elems)[0];
-                                right = (*set_set_lit.elems)[(*set_set_lit.elems).size() - 1];
+                                if(set_set_lit.elems->size() > 0){
+                                    left = (*set_set_lit.elems)[0];
+                                    right = (*set_set_lit.elems)[(*set_set_lit.elems).size() - 1];
+                                }
                             }
 
 
@@ -121,7 +123,7 @@ void Encoder::write_to_file(){
 
         file.close();
 
-        string command = "cat helper1.cnf helper2.cnf > ../formula.cnf";
+        string command = "cat helper1.cnf helper2.cnf > formula.cnf";
 
         system(command.c_str());
 
@@ -148,7 +150,7 @@ void Encoder::write_to_file(){
         file2 << ")\n" << ")\n" << "(check-sat)\n" << "(get-model)\n";
         file2.close();
 
-        string command = "cat helper1.smt2 helper2.smt2 helper3.smt2 > ../formula.smt2";
+        string command = "cat helper1.smt2 helper2.smt2 helper3.smt2 > formula.smt2";
 
         system(command.c_str());
 
@@ -952,6 +954,8 @@ void Encoder::write_definition_clauses() {
         }
         if(temp_clause.size() > 1)
             sat_subspace << ")" << endl;
+        else
+            sat_subspace << endl;
     }
 
     for(auto l : todo_lits){
@@ -1098,7 +1102,9 @@ void Encoder::handle_set_vars(){
         auto elems = get_set_elems(*var);
 
         smt_sat_funs << "(define-fun g_" << *var->name << " () (_ BitVec \n";
-        smt_sat_funs << "(bvor\n";
+
+        if((*elems).size() > 0)
+            smt_sat_funs << "(bvor\n";
 
         int bv_diff = bv_right - bv_left + 1;
         for(int i = bv_left; i <= bv_right; i++){
@@ -1121,13 +1127,18 @@ void Encoder::handle_set_vars(){
 
             } else {
                 trivial_encoding_domains << "(distinct ((_ extract " << i - bv_left << " " << i - bv_left << ") " 
-                                         << *var->name << ") #b1)" << endl;
+                                        << *var->name << ") #b1)" << endl;
                 smt_subspace << "(distinct ((_ extract " << i - bv_left << " " << i - bv_left << ") " 
-                                         << *var->name << ") #b1)\n---" << endl;
+                                        << *var->name << ") #b1)\n---" << endl;
             }
         }
 
-        smt_sat_funs << "\n)\n)" << endl;
+        if((*elems).size() > 0)
+            smt_sat_funs << ")\n)" << endl;
+        else {
+            smt_sat_funs << "(_ bv0 " << bv_right - bv_left + 1 << ")\n)\n" << endl;
+        }
+        
         right_total << "(= " << *var->name << " g_" << *var->name << ")" << endl;
     }
 }
@@ -1206,6 +1217,60 @@ void Encoder::write_mod_div(ofstream& proof_file){
 
 }
 
+void Encoder::write_lex(ofstream& proof_file){
+
+    int bv_diff = bv_right - bv_left + 1;
+    proof_file << "(define-fun leftmost_one ((?x (_ BitVec " << bv_diff << "))) Int\n";
+    proof_file << "(+ " << ((bv_left < 0) ? ("(- " + to_string(-bv_left) + ")") : to_string(bv_left)) << "\n";
+
+    for(int i = bv_diff - 1; i >= 0; i--){
+        proof_file << "(ite (= (bvand (bvlshr ?x (_ bv" << i << " " << bv_diff << ")) (_ bv1 "
+                   << bv_diff << ")) (_ bv1 " << bv_diff << ")) " 
+                   << i << " \n";
+    }
+
+    proof_file << "(- 1))\n";
+    for(int i = bv_left; i <= bv_right; i++)
+        proof_file << ")";
+    proof_file << "\n)\n" << endl;
+
+    proof_file << "(define-fun rightmost_one ((?x (_ BitVec " << bv_diff << "))) Int\n";
+    proof_file << "(+ " << ((bv_left < 0) ? ("(- " + to_string(-bv_left) + ")") : to_string(bv_left)) << "\n";
+
+    for(int i = 0; i < bv_diff; i++){
+        proof_file << "(ite (= (bvand (bvlshr ?x (_ bv" << i << " " << bv_diff << ")) (_ bv1 "
+                   << bv_diff << ")) (_ bv1 " << bv_diff << ")) " 
+                   << i << " \n";
+    }
+
+    proof_file << "(- 1))\n";
+    for(int i = bv_left; i <= bv_right; i++)
+        proof_file << ")";
+    proof_file << "\n)\n" << endl;
+
+    proof_file << "(define-fun rev ((?x (_ BitVec " << bv_diff << "))) (_ BitVec " << bv_diff << ")\n";
+    proof_file << "(concat\n";
+    for(int i = 0; i < bv_diff; i++){
+        proof_file << "((_ extract " << i << " " << i << ") ?x)\n"; 
+    }
+    proof_file << ")\n)\n" << endl;
+
+    proof_file << "(define-fun prefix ((?x (_ BitVec " << bv_diff << ")) (?y (_ BitVec " << bv_diff << "))) Bool\n";
+    proof_file << "(or\n";
+    proof_file << "(= ?x (_ bv0 " << bv_diff << "))\n";
+    for(int i = 1; i < bv_diff; i++){
+        proof_file << "(= (rev ?x) (bvand (rev ?y) #b";
+        for(int j = 0; j < i; j++)
+            proof_file << "1";
+        for(int j = i; j < bv_diff; j++)
+            proof_file << "0";
+
+        proof_file << "))\n";
+    }
+    proof_file << "(= (rev ?x) (rev ?y))\n)\n)\n" << endl;
+
+}
+
 void Encoder::flush_buffers(){
     trivial_encoding_vars.flush();
     trivial_encoding_constraints.flush();
@@ -1259,6 +1324,9 @@ void Encoder::generate_proof(){
     }
     proof_file << ")\n" << endl;
 
+    if(needLex) 
+        write_lex(proof_file);
+
     //Setting BitVec sizes
     int bv_diff = bv_right - bv_left + 1;
 
@@ -1284,7 +1352,7 @@ void Encoder::generate_proof(){
     system("cat trivial_encoding_vars.smt2 >> proof.smt2");
 
     int num_vars = 0;
-    ifstream formula("../formula.cnf");
+    ifstream formula("formula.cnf");
     string dummy;
     formula >> dummy >> dummy >> num_vars;  
     formula.close();
@@ -1403,13 +1471,17 @@ void Encoder::generate_proof(){
     }
 
     proof_file << "(define-fun smt_subspace () Bool\n";
-    if(smt_subspace_num > 2)
-        proof_file << "(and\n";
-    for(int i = 1; i < smt_subspace_num; i++)
-        proof_file << "smt_subspace" << i << "\n";
-    if(smt_subspace_num > 2)
+    if(smt_subspace_num == 1){
+        proof_file << "true\n)" << endl;
+    } else {
+        if(smt_subspace_num > 2)
+            proof_file << "(and\n";
+        for(int i = 1; i < smt_subspace_num; i++)
+            proof_file << "smt_subspace" << i << "\n";
+        if(smt_subspace_num > 2)
+            proof_file << ")\n";
         proof_file << ")\n";
-    proof_file << ")\n";
+    }
 
     ifstream sat_subspace_reader = ifstream("sat_subspace.smt2");
     if(std::filesystem::file_size("sat_subspace.smt2") > 0)
@@ -1431,14 +1503,17 @@ void Encoder::generate_proof(){
     }
 
     proof_file << "(define-fun sat_subspace () Bool\n";
-    if(sat_subspace_num > 2)
-        proof_file << "(and\n";
-    for(int i = 1; i < sat_subspace_num; i++)
-        proof_file << "sat_subspace" << i << "\n";
-    if(sat_subspace_num > 2)
-        proof_file << ")\n";
-    proof_file << ")" << endl;
-
+    if(sat_subspace_num == 1){
+        proof_file << "true\n)" << endl;
+    } else {
+        if(sat_subspace_num > 2)
+            proof_file << "(and\n";
+        for(int i = 1; i < sat_subspace_num; i++)
+            proof_file << "sat_subspace" << i << "\n";
+        if(sat_subspace_num > 2)
+            proof_file << ")\n";
+        proof_file << ")" << endl;
+    }
 
     system("cat sat_smt_funs.smt2 >> proof.smt2");
 
@@ -1616,6 +1691,8 @@ void Encoder::generate_proof2step(){
         write_ones(proof_file);
     if(needModDiv)
         write_mod_div(proof_file);
+    if(needLex)
+        write_lex(proof_file);
 
     string command =
         "awk '/BitVec/{$0=$0\"" + std::to_string(bv_diff) + "))\"}1' "
@@ -1709,14 +1786,17 @@ void Encoder::generate_proof2step(){
     }
 
     proof_file << "(define-fun smt_subspace_step1 () Bool\n";
-    if(smt_subspace_step1_num > 2)
-        proof_file << "(and\n";
-    for(int i = 1; i < smt_subspace_step1_num; i++)
-        proof_file << "smt_subspace_step1_" << i << "\n";
-    if(smt_subspace_step1_num > 2)
+    if(smt_subspace_step1_num == 1){
+        proof_file << "true\n)\n";
+    } else {
+        if(smt_subspace_step1_num > 2)
+            proof_file << "(and\n";
+        for(int i = 1; i < smt_subspace_step1_num; i++)
+            proof_file << "smt_subspace_step1_" << i << "\n";
+        if(smt_subspace_step1_num > 2)
+            proof_file << ")\n";
         proof_file << ")\n";
-    proof_file << ")\n";
-
+    }
 
     smt_subspace_reader = ifstream("smt_subspace_step1.smt2");
     if(std::filesystem::file_size("smt_subspace_step1.smt2") > 0)
@@ -1740,7 +1820,7 @@ void Encoder::generate_proof2step(){
     }
 
     ifstream connection2step_reader = ifstream("connection2step.smt2");
-    if(std::filesystem::file_size("connection2step.smt2") > 0 && should_define_fun)
+    if((std::filesystem::file_size("connection2step.smt2") > 0 && should_define_fun) || std::filesystem::file_size("smt_subspace_step1.smt2") == 0)
         proof_file << "(define-fun smt_subspace" << smt_subspace_step2_num++ << " () Bool\n(and\n"; 
 
     should_define_fun = false;    
@@ -1917,10 +1997,13 @@ void Encoder::generate_proof2step(){
     }
     proof_file << ")\n" << endl;
 
+    if(needLex)
+        write_lex(proof_file);
+
     system("cat trivial_encoding_vars.smt2 >> proof.smt2");
 
     int num_vars = 0;
-    ifstream formula("../formula.cnf");
+    ifstream formula("formula.cnf");
     string dummy;
     formula >> dummy >> dummy >> num_vars;  
     formula.close();
@@ -2217,7 +2300,7 @@ void Encoder::generate_proof2step(){
     system("rm -f left_containing.smt2 right_containing.smt2 left_total.smt2 right_total.smt2 sat_constraints.smt2");
     system("rm -f sat_smt_funs.smt2 smt_sat_funs.smt2");
     system("rm -f connection2step.smt2 constraints2step1.smt2 constraints2step2.smt2 domains2step.smt2 smt_step1_funs.smt2");
-    system("rm -f left_total_step1.smt2 smt_step1_funs.smt2");
+    system("rm -f left_total_step1.smt2 smt_step1_funs.smt2 smt_subspace_step1.smt2");
 
     system("mkdir -p proofs");
     system("mkdir -p proofs_step1");
@@ -2234,15 +2317,15 @@ void Encoder::run_solver(const string& outputFile) {
 
     string command = "";
     if(solver_type == MINISAT && file_type == DIMACS)
-        command = "minisat ../formula.cnf " + outputFile + "> /dev/null 2>&1";
+        command = "minisat formula.cnf " + outputFile + "> /dev/null 2>&1";
     else if(solver_type == CADICAL && file_type == DIMACS)
-        command = "cadical -q ../formula.cnf | cut -c2- > " + outputFile;
+        command = "cadical -q formula.cnf | cut -c2- > " + outputFile;
     else if(solver_type == GLUCOSE && file_type == DIMACS)
-        command = "../scripts/glucose-wrapper ../formula.cnf " + outputFile + "> /dev/null 2>&1";
+        command = "../scripts/glucose-wrapper formula.cnf " + outputFile + "> /dev/null 2>&1";
     else if(solver_type == Z3 && file_type == SMTLIB)
-        command = "z3 ../formula.smt2 > " + outputFile;
+        command = "z3 formula.smt2 > " + outputFile;
     else if(solver_type == CVC5 && file_type == SMTLIB)
-        command = "cvc5 --produce-models -q ../formula.smt2 > " + outputFile;
+        command = "cvc5 --produce-models -q formula.smt2 > " + outputFile;
     else
         cerr << "Unsupported combination of solver and file type\n";
     
@@ -2563,7 +2646,7 @@ void Encoder::encode_variable(Variable& var, CNF& cnf_clauses) {
                     smt_subspace << "(= " << *basic_var->name << " " << num_string << ")\n";
                 }
                 if(n > 1)
-                    smt_subspace << ")";
+                    smt_subspace << ")\n";
                 smt_subspace << "---" << endl;
 
                 if(n > 1)
@@ -2573,7 +2656,7 @@ void Encoder::encode_variable(Variable& var, CNF& cnf_clauses) {
                     smt_subspace_step1 << "(= " << *basic_var->name << " " << num_string << ")\n";
                 }
                 if(n > 1)
-                    smt_subspace_step1 << ")";
+                    smt_subspace_step1 << ")\n";
                 smt_subspace_step1 << "---" << endl;
                 
             }
@@ -2929,8 +3012,11 @@ BasicVar* Encoder::get_var(Constraint& constr, int ind, CNF& cnf_clauses){
             for(auto elem : *elems){
                 cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, sub_id, true, elem)});
 
-                if(export_proof)
+                if(export_proof){
                     sat_dom_clauses.push_back({make_literal(LiteralType::SET_ELEM, sub_id, true, elem)});
+                    smt_subspace << "(= ((_ extract " << elem - bv_left << " " << elem - bv_left << ") " 
+                                 << *name << ") #b1)\n---\n";   
+                }
             }
 
             if(export_proof){
@@ -2938,11 +3024,6 @@ BasicVar* Encoder::get_var(Constraint& constr, int ind, CNF& cnf_clauses){
 
                 isBV = true;
 
-                if(bv_left > (*elems)[0])
-                    bv_left = (*elems)[0];
-
-                if(bv_right < (*elems)[(*elems).size()-1])
-                    bv_right = (*elems)[(*elems).size()-1];
 
                 trivial_encoding_vars << "(declare-const " << *set_var->name << " (_ BitVec \n"; 
             }
@@ -3523,6 +3604,11 @@ void Encoder::encode_constraint(Constraint& constr, CNF& cnf_clauses) {
         auto y = get_var(constr, 1, cnf_clauses);
         auto r = get_var(constr, 2, cnf_clauses);
         encode_set_le_reif(*x, *y, *r, cnf_clauses);
+    } else if(*constr.name == "set_le_imp"){
+        auto x = get_var(constr, 0, cnf_clauses);
+        auto y = get_var(constr, 1, cnf_clauses);
+        auto r = get_var(constr, 2, cnf_clauses);
+        encode_set_le_imp(*x, *y, *r, cnf_clauses);
     } else if(*constr.name == "set_lt"){
         auto x = get_var(constr, 0, cnf_clauses);
         auto y = get_var(constr, 1, cnf_clauses);
@@ -3532,6 +3618,11 @@ void Encoder::encode_constraint(Constraint& constr, CNF& cnf_clauses) {
         auto y = get_var(constr, 1, cnf_clauses);
         auto r = get_var(constr, 2, cnf_clauses);
         encode_set_lt_reif(*x, *y, *r, cnf_clauses);
+    } else if(*constr.name == "set_lt_imp"){
+        auto x = get_var(constr, 0, cnf_clauses);
+        auto y = get_var(constr, 1, cnf_clauses);
+        auto r = get_var(constr, 2, cnf_clauses);
+        encode_set_lt_imp(*x, *y, *r, cnf_clauses);
     } else if(*constr.name == "set_subset"){
         auto x = get_var(constr, 0, cnf_clauses);
         auto y = get_var(constr, 1, cnf_clauses);
@@ -10427,9 +10518,23 @@ void Encoder::encode_set_intersect(const BasicVar& x, const BasicVar& y, const B
 }
 
 void Encoder::set_max(const BasicVar& x, const BasicVar& set, CNF &cnf_clauses){
+
+    if(export_proof){
+        connection2step << "(= " << *x.name << " (leftmost_one " << *set.name << "))\n";
+        connection2step << "---" << endl;
+                    
+        constraints2step2 << "(= " << *x.name << " (leftmost_one " << *set.name << "))\n";
+
+        smt_step1_funs << "(define-fun f_" << *x.name << " () Int\n";
+        smt_step1_funs << "(leftmost_one " << *set.name << ")\n)\n";    
+                          
+        left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
+    }
+
     auto elems = *get_set_elems(set);
 
-    Clause empty_set_clause;
+    auto yes_empty_clause_helper = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
+    auto not_empty_clause_helper = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
 
     Clause helpers;
     for(auto elem : elems){
@@ -10439,45 +10544,152 @@ void Encoder::set_max(const BasicVar& x, const BasicVar& set, CNF &cnf_clauses){
         cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, set.id, false, elem), 
                                make_literal(LiteralType::ORDER, x.id, false, elem-1)});  
                                
-        cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, set.id, false, elem), 
-                               make_literal(LiteralType::ORDER, x.id, true, elem), not_helper}); 
+        cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, set.id, true, elem), not_helper}); 
+        cnf_clauses.push_back({make_literal(LiteralType::ORDER, x.id, true, elem), not_helper}); 
+
+        if(export_proof){
+            helper_map[not_helper->id].push_back({make_literal(LiteralType::SET_ELEM, set.id, true, elem)}); 
+            helper_map[not_helper->id].push_back({make_literal(LiteralType::ORDER, x.id, true, elem)});
+
+            sat_constraint_clauses.push_back({make_literal(LiteralType::SET_ELEM, set.id, false, elem), 
+                                make_literal(LiteralType::ORDER, x.id, false, elem-1)});  
+                                
+            sat_constraint_clauses.push_back({make_literal(LiteralType::SET_ELEM, set.id, true, elem), not_helper}); 
+            sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, x.id, true, elem), not_helper});
+        }
+
         helpers.push_back(yes_helper);
 
-        empty_set_clause.push_back(make_literal(LiteralType::SET_ELEM, set.id, true, elem));
+        cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, set.id, false, elem), not_empty_clause_helper});
+        if(export_proof){
+            helper_map[not_empty_clause_helper->id].push_back({make_literal(LiteralType::SET_ELEM, set.id, false, elem)});
+        
+            sat_constraint_clauses.push_back({make_literal(LiteralType::SET_ELEM, set.id, false, elem), not_empty_clause_helper});
+        
+        }
     }
 
-    empty_set_clause.push_back(make_literal(LiteralType::ORDER, x.id, true, elems[0]-1));
+    cnf_clauses.push_back({make_literal(LiteralType::ORDER, x.id, true, bv_left-1), not_empty_clause_helper});
+
+    if(export_proof){
+        helper_map[not_empty_clause_helper->id].push_back({make_literal(LiteralType::ORDER, x.id, true, bv_left-1)});
+    
+        sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, x.id, true, bv_left-1), not_empty_clause_helper});
+    
+    }
+
+    helpers.push_back(yes_empty_clause_helper);
     cnf_clauses.push_back(helpers);
-    cnf_clauses.push_back(empty_set_clause);
+
+    if(export_proof){
+        sat_constraint_clauses.push_back(helpers);
+
+        definition_clauses.push_back(helpers);
+    }
 }
 
 // Encodes a constraint of type x <= y
 void Encoder::encode_set_le(const BasicVar& x, const BasicVar& y, CNF &cnf_clauses){
+
+
     auto x_elems = *get_set_elems(x);
     auto y_elems = *get_set_elems(y);
     int n = x_elems.size();
     int m = y_elems.size();
 
-    if(x_elems.size() == 0)
-        return;
-    if(y_elems.size() == 0){
-        declare_unsat(cnf_clauses);
+    if(x_elems.size() == 0){
+        LiteralPtr yes_helper = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
+        LiteralPtr not_helper = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
+
+        cnf_clauses.push_back({yes_helper, not_helper});
+     
+        if(export_proof){
+            sat_constraint_clauses.push_back({yes_helper, not_helper});
+        
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(or (prefix " << *x.name << " " << *y.name << ") "
+                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                            << "(bvule (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
+        }
+
         return;
     }
+    if(y_elems.size() == 0){
+        if(export_proof){
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(or (prefix " << *x.name << " " << *y.name << ") "
+                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                            << "(bvule (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
+        }
+
+        for(auto elem : x_elems){
+            cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, x.id, false, elem)});
+
+            if(export_proof)
+                sat_constraint_clauses.push_back({make_literal(LiteralType::SET_ELEM, x.id, false, elem)});
+        }
+
+        return;
+    }
+
+
+    if(export_proof){
+        is2step = true;
+        needLex = true;
+        isLIA = true;
+        
+        constraint2step_set.insert(next_constraint_num);
+
+
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        constraints2step1 << "(or (prefix " << *x.name << " " << *y.name << ") "
+                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                          << "(bvule (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
+
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        constraints2step2 << "(and\n";
+    }
+
 
     int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
     int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
 
-    auto xmax = encode_int_range_helper_variable(l-1, u, cnf_clauses);
-    auto ymax = encode_int_range_helper_variable(l-1, u, cnf_clauses);
+    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
 
     set_max(*xmax, x, cnf_clauses);
     set_max(*ymax, y, cnf_clauses);
 
-    int helper_x_id = next_helper_id++;
-    int helper_y_id = next_helper_id++;
+    if(export_proof){
+        int bv_diff = bv_right - bv_left + 1;
+
+        constraints2step2 << "(or\n(= " << *x.name << " " << *y.name << ")\n";
+
+        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
+        constraints2step2 << "(ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
+                          << bv_diff << ") (- (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
+                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
+                          <<  " (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")))\n)\n)\n)\n)\n";
+    }
+
+    Clause x_yes_helpers, x_not_helpers;
+    Clause y_yes_helpers, y_not_helpers;
 
     for(int i = l; i <= u; i++){
+        x_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        x_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+        y_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        y_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+
         bool x_found = false;
         bool y_found = false;
 
@@ -10496,131 +10708,312 @@ void Encoder::encode_set_le(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
         }
 
         if(x_found){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
+            cnf_clauses.push_back({x_yes_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
+            cnf_clauses.push_back({x_not_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+            if(export_proof){
+                helper_map[-x_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+                sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});                
+            }
         } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i)});
+            cnf_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+            }
         }
 
         if(y_found){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, true, i),
+            cnf_clauses.push_back({y_yes_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, y.id, false, i)});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, false, i),
+            cnf_clauses.push_back({y_not_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+        if(export_proof){
+            helper_map[-y_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            sat_constraint_clauses.push_back({y_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, true, i)});            
+        }
         } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, false, i)});
+            cnf_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+            }
         }
     }
 
-    int helper_id = next_helper_id++; 
+    Clause yes_helpers, not_helpers;
 
-    for(int i = l; i < u; i++){
-        LiteralPtr yes_helper1 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper1 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper2 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper2 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper3 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper3 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, false, i),
-                               not_helper1});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, true, i),
-                               not_helper1});                           
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper2});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i+1),
-                               not_helper2});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper3});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i+1),
-                               not_helper3});
-                               
-        cnf_clauses.push_back({yes_helper1, yes_helper2, yes_helper3});
-
-        LiteralPtr yes_helper4 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper4 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper5 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper5 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper4});     
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, ymax->id, false, i),
-                               not_helper4});                         
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper5});
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, ymax->id, true, i),
-                               not_helper5});
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, true, i),
-                               yes_helper4, yes_helper5});
-
-        LiteralPtr yes_helper6 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper6 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper7 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper7 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper6});    
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, xmax->id, true, i-1),
-                               not_helper6});                        
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper7});
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, xmax->id, false, i-1),
-                               not_helper7});
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, false, i),
-                               yes_helper6, yes_helper7});
-
+    for(int i = l; i <= u; i++){
+        yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
     }
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, u),
-                           make_literal(LiteralType::HELPER, helper_x_id, false, u),
-                           make_literal(LiteralType::HELPER, helper_y_id, true, u)});
+    for(int i = l; i < u; i++){
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, u),
-                           make_literal(LiteralType::HELPER, helper_x_id, true, u)});
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, u),
-                           make_literal(LiteralType::HELPER, helper_y_id, false, u)});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+                               
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, l)});
+        if(export_proof){
 
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l+1]});                           
+            helper_map[not_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l+1]});  
+
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+        }
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+        if(export_proof){
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, false, i-1)});            
+
+        }
+
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});        
+
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            helper_map[-yes_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});            
+        }
+    }
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           x_yes_helpers[u-l]});
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           y_not_helpers[u-l]});
+
+    cnf_clauses.push_back({yes_helpers[0]});
+
+    if(export_proof){
+        helper_map[not_helpers[u-l]->id].push_back({x_not_helpers[u-l], y_yes_helpers[u-l]});
+        helper_map[-yes_helpers[u-l]->id].push_back({x_yes_helpers[u-l]});
+        helper_map[-yes_helpers[u-l]->id].push_back({y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            x_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[0]});    
+        definition_clauses.push_back({yes_helpers[0]});  
+    }
 }
 
 // Encodes a constraint of type (x <= y) <=> r
 void Encoder::encode_set_le_reif(const BasicVar& x, const BasicVar& y, const BasicVar& r, CNF &cnf_clauses){
+
+
     auto x_elems = *get_set_elems(x);
     auto y_elems = *get_set_elems(y);
     int n = x_elems.size();
     int m = y_elems.size();
 
-    if(x_elems.size() == 0)
-        return;
-    if(y_elems.size() == 0){
-        declare_unsat(cnf_clauses);
+    if(x_elems.size() == 0){
+        LiteralPtr yes_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0);
+
+        cnf_clauses.push_back({yes_r});
+     
+        if(export_proof){
+            sat_constraint_clauses.push_back({yes_r});
+        
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(= " << *r.name << " (ite (or (prefix " << *x.name << " " 
+                                         << *y.name << ") " << "(and (not (prefix " 
+                                         << *y.name << " " << *x.name << ")) " 
+                                         << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+        }
+
         return;
     }
+    if(y_elems.size() == 0){
+        if(export_proof){
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(= " << *r.name << " (ite (or (prefix " << *x.name << " " 
+                                         << *y.name << ") " << "(and (not (prefix " 
+                                         << *y.name << " " << *x.name << ")) " 
+                                         << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+        }
+
+        CNF temp_clauses;
+
+        for(auto elem : x_elems){
+            temp_clauses.push_back({make_literal(LiteralType::SET_ELEM, x.id, false, elem)});
+        }
+
+        reify(temp_clauses, r, cnf_clauses);
+
+        return;
+    }
+
+
+    if(export_proof){
+        is2step = true;
+        needLex = true;
+        isLIA = true;
+        
+        constraint2step_set.insert(next_constraint_num);
+
+
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        constraints2step1 << "(= " << *r.name << " (ite (or (prefix " << *x.name << " " << *y.name << ") "
+                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                          << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        constraints2step2 << "(and\n";
+    }
+
 
     int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
     int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
 
-    auto xmax = encode_int_range_helper_variable(l-1, u, cnf_clauses);
-    auto ymax = encode_int_range_helper_variable(l-1, u, cnf_clauses);
+    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
 
     set_max(*xmax, x, cnf_clauses);
     set_max(*ymax, y, cnf_clauses);
 
-    int helper_x_id = next_helper_id++;
-    int helper_y_id = next_helper_id++;
+    if(export_proof){
+        int bv_diff = bv_right - bv_left + 1;
+
+        constraints2step2 << "(= " << *r.name << " (ite (or\n(= " << *x.name << " " << *y.name << ")\n";
+
+        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
+        constraints2step2 << "(ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
+                          << bv_diff << ") (- (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
+                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
+                          <<  " (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << "))))\n) 1 0)))\n)\n";
+    }
+
+    Clause x_yes_helpers, x_not_helpers;
+    Clause y_yes_helpers, y_not_helpers;
 
     for(int i = l; i <= u; i++){
+        x_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        x_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+        y_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        y_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+
         bool x_found = false;
         bool y_found = false;
 
@@ -10639,106 +11032,542 @@ void Encoder::encode_set_le_reif(const BasicVar& x, const BasicVar& y, const Bas
         }
 
         if(x_found){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
+            cnf_clauses.push_back({x_yes_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
+            cnf_clauses.push_back({x_not_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+            if(export_proof){
+                helper_map[-x_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+                sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});                
+            }
         } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i)});
+            cnf_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+            }
         }
 
         if(y_found){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, true, i),
+            cnf_clauses.push_back({y_yes_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, y.id, false, i)});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, false, i),
+            cnf_clauses.push_back({y_not_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+        if(export_proof){
+            helper_map[-y_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            sat_constraint_clauses.push_back({y_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, true, i)});            
+        }
         } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, false, i)});
+            cnf_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+            }
         }
     }
 
-    int helper_id = next_helper_id++; 
+    Clause yes_helpers, not_helpers;
 
-    for(int i = l; i < u; i++){
-        LiteralPtr yes_helper1 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper1 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper2 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper2 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper3 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper3 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, false, i),
-                               not_helper1});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, true, i),
-                               not_helper1});                           
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper2});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i+1),
-                               not_helper2});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper3});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i+1),
-                               not_helper3});
-                               
-        cnf_clauses.push_back({yes_helper1, yes_helper2, yes_helper3});
-
-        LiteralPtr yes_helper4 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper4 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper5 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper5 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper4});     
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, ymax->id, false, i),
-                               not_helper4});                         
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper5});
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, ymax->id, true, i),
-                               not_helper5});
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, true, i),
-                               yes_helper4, yes_helper5});
-
-        LiteralPtr yes_helper6 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper6 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper7 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper7 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper6});    
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, xmax->id, true, i-1),
-                               not_helper6});                        
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper7});
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, xmax->id, false, i-1),
-                               not_helper7});
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, false, i),
-                               yes_helper6, yes_helper7});
-
+    for(int i = l; i <= u; i++){
+        yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
     }
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, u),
-                           make_literal(LiteralType::HELPER, helper_x_id, false, u),
-                           make_literal(LiteralType::HELPER, helper_y_id, true, u)});
+    for(int i = l; i < u; i++){
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, u),
-                           make_literal(LiteralType::HELPER, helper_x_id, true, u)});
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, u),
-                           make_literal(LiteralType::HELPER, helper_y_id, false, u)});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+                               
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, l),
-                           make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
+        if(export_proof){
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, l),
-                           make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0)});
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l+1]});                           
+            helper_map[not_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l+1]});  
+
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+        }
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+        if(export_proof){
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, false, i-1)});            
+
+        }
+
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});        
+
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            helper_map[-yes_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});            
+        }
+    }
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           x_yes_helpers[u-l]});
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           y_not_helpers[u-l]});
+
+    LiteralPtr yes_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0);
+    LiteralPtr not_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0);
+
+    cnf_clauses.push_back({yes_helpers[0], not_r});
+    cnf_clauses.push_back({not_helpers[0], yes_r});
+
+    if(export_proof){
+        helper_map[not_helpers[u-l]->id].push_back({x_not_helpers[u-l], y_yes_helpers[u-l]});
+        helper_map[-yes_helpers[u-l]->id].push_back({x_yes_helpers[u-l]});
+        helper_map[-yes_helpers[u-l]->id].push_back({y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            x_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[0], not_r});
+        sat_constraint_clauses.push_back({not_helpers[0], yes_r});    
+        definition_clauses.push_back({yes_helpers[0], not_r});
+        definition_clauses.push_back({not_helpers[0], yes_r});
+    }
 }
+
+// Encodes a constraint of type (x <= y) => r
+void Encoder::encode_set_le_imp(const BasicVar& x, const BasicVar& y, const BasicVar& r, CNF &cnf_clauses){
+
+
+    auto x_elems = *get_set_elems(x);
+    auto y_elems = *get_set_elems(y);
+    int n = x_elems.size();
+    int m = y_elems.size();
+
+    if(x_elems.size() == 0){
+        LiteralPtr yes_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0);
+        LiteralPtr not_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0);
+
+        cnf_clauses.push_back({yes_r, not_r});
+     
+        if(export_proof){
+            sat_constraint_clauses.push_back({yes_r, not_r});
+        
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (or (prefix " << *x.name << " " 
+                                         << *y.name << ") " << "(and (not (prefix " 
+                                         << *y.name << " " << *x.name << ")) " 
+                                         << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+       }
+
+        return;
+    }
+    if(y_elems.size() == 0){
+        if(export_proof){
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (or (prefix " << *x.name << " " 
+                                         << *y.name << ") " << "(and (not (prefix " 
+                                         << *y.name << " " << *x.name << ")) " 
+                                         << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+        }
+
+        CNF temp_clauses;
+
+        for(auto elem : x_elems){
+            temp_clauses.push_back({make_literal(LiteralType::SET_ELEM, x.id, false, elem)});
+        }
+
+        impify(temp_clauses, r, cnf_clauses);
+
+        return;
+    }
+
+
+    if(export_proof){
+        is2step = true;
+        needLex = true;
+        isLIA = true;
+        
+        constraint2step_set.insert(next_constraint_num);
+
+
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        constraints2step1 << "(=> (= " << *r.name << " 1) (or (prefix " << *x.name << " " << *y.name << ") "
+                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                          << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        constraints2step2 << "(and\n";
+    }
+
+
+    int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
+    int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
+
+    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+
+    set_max(*xmax, x, cnf_clauses);
+    set_max(*ymax, y, cnf_clauses);
+
+    if(export_proof){
+        int bv_diff = bv_right - bv_left + 1;
+
+        constraints2step2 << "(=> (= " << *r.name << " 1) (or\n(= " << *x.name << " " << *y.name << ")\n";
+
+        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
+        constraints2step2 << "(ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
+                          << bv_diff << ") (- (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
+                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
+                          <<  " (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << "))))\n)))\n)\n";
+    }
+
+    Clause x_yes_helpers, x_not_helpers;
+    Clause y_yes_helpers, y_not_helpers;
+
+    for(int i = l; i <= u; i++){
+        x_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        x_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+        y_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        y_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+
+        bool x_found = false;
+        bool y_found = false;
+
+        for(auto x_elem : x_elems){
+            if(x_elem == i){
+                x_found = true;
+                break;
+            } 
+        }
+
+        for(auto y_elem : y_elems){
+            if(y_elem == i){
+                y_found = true;
+                break;
+            } 
+        }
+
+        if(x_found){
+            cnf_clauses.push_back({x_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+            cnf_clauses.push_back({x_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+            if(export_proof){
+                helper_map[-x_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+                sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});                
+            }
+        } else {
+            cnf_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+            }
+        }
+
+        if(y_found){
+            cnf_clauses.push_back({y_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            cnf_clauses.push_back({y_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+        if(export_proof){
+            helper_map[-y_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            sat_constraint_clauses.push_back({y_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, true, i)});            
+        }
+        } else {
+            cnf_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+            }
+        }
+    }
+
+    Clause yes_helpers, not_helpers;
+
+    for(int i = l; i <= u; i++){
+        yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+    }
+
+    for(int i = l; i < u; i++){
+
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+                               
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l+1]});                           
+            helper_map[not_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l+1]});  
+
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+        }
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+        if(export_proof){
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, false, i-1)});            
+
+        }
+
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});        
+
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            helper_map[-yes_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});            
+        }
+    }
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           x_yes_helpers[u-l]});
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           y_not_helpers[u-l]});
+
+    LiteralPtr yes_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0);
+    LiteralPtr not_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0);
+
+    cnf_clauses.push_back({yes_helpers[0], not_r});
+
+    if(export_proof){
+        helper_map[not_helpers[u-l]->id].push_back({x_not_helpers[u-l], y_yes_helpers[u-l]});
+        helper_map[-yes_helpers[u-l]->id].push_back({x_yes_helpers[u-l]});
+        helper_map[-yes_helpers[u-l]->id].push_back({y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            x_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[0], not_r}); 
+        definition_clauses.push_back({yes_helpers[0], not_r});
+    }
+}
+
 
 // Encodes a constraint of type x < y
 void Encoder::encode_set_lt(const BasicVar& x, const BasicVar& y, CNF &cnf_clauses){
@@ -10748,33 +11577,101 @@ void Encoder::encode_set_lt(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
     int m = y_elems.size();
 
     if(y_elems.size() == 0){
-        declare_unsat(cnf_clauses);
-        return;
-    }
-    if(x_elems.size() == 0){
-        Clause new_clause;
-        for(auto elem : y_elems){
-            new_clause.push_back(make_literal(LiteralType::SET_ELEM, y.id, true, elem));
+        if(export_proof){
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(or (and (prefix " << *x.name << " " << *y.name << ") "
+                            << " (distinct " << *x.name << " " << *y.name << ")) "
+                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
         }
-        cnf_clauses.push_back(new_clause);
+
+        declare_unsat(cnf_clauses);
 
         return;
+    }
+
+    if(x_elems.size() == 0){
+     
+        if(export_proof){
+        
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(or (and (prefix " << *x.name << " " << *y.name << ") "
+                            << " (distinct " << *x.name << " " << *y.name << ")) "
+                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
+        }
+
+        Clause c;
+        for(auto elem : y_elems){
+            c.push_back(make_literal(LiteralType::SET_ELEM, y.id, true, elem));
+        }
+
+        cnf_clauses.push_back(c);
+
+        if(export_proof)
+            sat_constraint_clauses.push_back(c);
+
+        return;
+    }
+
+
+    if(export_proof){
+        is2step = true;
+        needLex = true;
+        isLIA = true;
+        
+        constraint2step_set.insert(next_constraint_num);
+
+
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        constraints2step1 << "(or (and (prefix " << *x.name << " " << *y.name << ") "
+                          << "(distinct " << *x.name << " " << *y.name << ")) "
+                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                          << "(bvult (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
+
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        constraints2step2 << "(and\n";
     }
 
 
     int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
     int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
 
-    auto xmax = encode_int_range_helper_variable(l-1, u, cnf_clauses);
-    auto ymax = encode_int_range_helper_variable(l-1, u, cnf_clauses);
+    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
 
     set_max(*xmax, x, cnf_clauses);
     set_max(*ymax, y, cnf_clauses);
 
-    int helper_x_id = next_helper_id++;
-    int helper_y_id = next_helper_id++;
+    if(export_proof){
+        int bv_diff = bv_right - bv_left + 1;
+
+
+        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
+        constraints2step2 << "(ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
+                          << bv_diff << ") (- (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
+                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
+                          <<  " (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")))\n)\n)\n)\n";
+    }
+
+    Clause x_yes_helpers, x_not_helpers;
+    Clause y_yes_helpers, y_not_helpers;
 
     for(int i = l; i <= u; i++){
+        x_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        x_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+        y_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        y_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+
         bool x_found = false;
         bool y_found = false;
 
@@ -10793,98 +11690,206 @@ void Encoder::encode_set_lt(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
         }
 
         if(x_found){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
+            cnf_clauses.push_back({x_yes_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
+            cnf_clauses.push_back({x_not_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+            if(export_proof){
+                helper_map[-x_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+                sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});                
+            }
         } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i)});
+            cnf_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+            }
         }
 
         if(y_found){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, true, i),
+            cnf_clauses.push_back({y_yes_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, y.id, false, i)});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, false, i),
+            cnf_clauses.push_back({y_not_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+        if(export_proof){
+            helper_map[-y_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            sat_constraint_clauses.push_back({y_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, true, i)});            
+        }
         } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, false, i)});
+            cnf_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+            }
         }
     }
 
-    int helper_id = next_helper_id++; 
+    Clause yes_helpers, not_helpers;
 
     for(int i = l; i <= u; i++){
-        LiteralPtr yes_helper1 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper1 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper2 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper2 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper3 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper3 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-        
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
-                            make_literal(LiteralType::HELPER, helper_y_id, false, i),
-                            not_helper1});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
-                            make_literal(LiteralType::HELPER, helper_y_id, true, i),
-                            not_helper1});                           
-        if(i != u){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                                not_helper2});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i+1),
-                                not_helper2});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                                not_helper3});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i+1),
-                                not_helper3});
-        } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                                not_helper2});
-            cnf_clauses.push_back({not_helper3});
-        }
-                               
-        cnf_clauses.push_back({yes_helper1, yes_helper2, yes_helper3});
-
-        LiteralPtr yes_helper4 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper4 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper5 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper5 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper4});     
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, ymax->id, false, i),
-                               not_helper4});                         
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper5});
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, ymax->id, true, i),
-                               not_helper5});
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, true, i),
-                               yes_helper4, yes_helper5});
-
-        LiteralPtr yes_helper6 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper6 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper7 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper7 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper6});    
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, xmax->id, true, i-1),
-                               not_helper6});                        
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper7});
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, xmax->id, false, i-1),
-                               not_helper7});
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, false, i),
-                               yes_helper6, yes_helper7});
-
+        yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
     }
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, l)});
+    for(int i = l; i < u; i++){
+
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+                               
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l+1]});                           
+            helper_map[not_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l+1]});  
+
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+        }
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+        if(export_proof){
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, false, i-1)});            
+
+        }
+
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});        
+
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            helper_map[-yes_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});            
+        }
+    }
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           x_yes_helpers[u-l],
+                           y_not_helpers[u-l]});
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l]});
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+    cnf_clauses.push_back({yes_helpers[0]});
+
+    if(export_proof){
+        helper_map[-yes_helpers[u-l]->id].push_back({x_yes_helpers[u-l], y_not_helpers[u-l]});
+        helper_map[not_helpers[u-l]->id].push_back({x_not_helpers[u-l]});
+        helper_map[not_helpers[u-l]->id].push_back({y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            x_yes_helpers[u-l],
+                            y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                            x_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                            y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[0]});    
+        definition_clauses.push_back({yes_helpers[0]});  
+    }
 }
 
 // Encodes a constraint of type (x < y) <=> r
@@ -10895,33 +11900,103 @@ void Encoder::encode_set_lt_reif(const BasicVar& x, const BasicVar& y, const Bas
     int m = y_elems.size();
 
     if(y_elems.size() == 0){
-        declare_unsat(cnf_clauses);
-        return;
-    }
-    if(x_elems.size() == 0){
-        Clause new_clause;
-        for(auto elem : y_elems){
-            new_clause.push_back(make_literal(LiteralType::SET_ELEM, y.id, true, elem));
+        if(export_proof){
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(= " << *r.name << " (ite (or (and (prefix " << *x.name << " " << *y.name << ") "
+                            << " (distinct " << *x.name << " " << *y.name << ")) "
+                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
         }
-        cnf_clauses.push_back(new_clause);
+
+        cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
+
+        if(export_proof)
+            sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
         return;
+    }
+
+    if(x_elems.size() == 0){
+     
+        if(export_proof){
+        
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(= " << *r.name << " (ite (or (and (prefix " << *x.name << " " << *y.name << ") "
+                            << " (distinct " << *x.name << " " << *y.name << ")) "
+                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+        }
+
+        Clause c;
+        for(auto elem : y_elems){
+            c.push_back(make_literal(LiteralType::SET_ELEM, y.id, true, elem));
+        }
+
+        CNF temp_clauses = {c};
+
+        reify(temp_clauses, r, cnf_clauses);
+
+        return;
+    }
+
+
+    if(export_proof){
+        is2step = true;
+        needLex = true;
+        isLIA = true;
+        
+        constraint2step_set.insert(next_constraint_num);
+
+
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        constraints2step1 << "(= " << *r.name << " (ite (or (and (prefix " << *x.name << " " << *y.name << ") "
+                          << "(distinct " << *x.name << " " << *y.name << ")) "
+                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                          << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        constraints2step2 << "(and\n";
     }
 
 
     int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
     int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
 
-    auto xmax = encode_int_range_helper_variable(l-1, u, cnf_clauses);
-    auto ymax = encode_int_range_helper_variable(l-1, u, cnf_clauses);
+    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
 
     set_max(*xmax, x, cnf_clauses);
     set_max(*ymax, y, cnf_clauses);
 
-    int helper_x_id = next_helper_id++;
-    int helper_y_id = next_helper_id++;
+    if(export_proof){
+        int bv_diff = bv_right - bv_left + 1;
+
+
+        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
+        constraints2step2 << "(= " << *r.name << " (ite (ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
+                          << bv_diff << ") (- (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
+                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
+                          <<  " (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")))\n) 1 0))\n)\n)\n";
+    }
+
+    Clause x_yes_helpers, x_not_helpers;
+    Clause y_yes_helpers, y_not_helpers;
 
     for(int i = l; i <= u; i++){
+        x_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        x_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+        y_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        y_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+
         bool x_found = false;
         bool y_found = false;
 
@@ -10940,103 +12015,540 @@ void Encoder::encode_set_lt_reif(const BasicVar& x, const BasicVar& y, const Bas
         }
 
         if(x_found){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
+            cnf_clauses.push_back({x_yes_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
+            cnf_clauses.push_back({x_not_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+            if(export_proof){
+                helper_map[-x_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+                sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});                
+            }
         } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i)});
+            cnf_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+            }
         }
 
         if(y_found){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, true, i),
+            cnf_clauses.push_back({y_yes_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, y.id, false, i)});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, false, i),
+            cnf_clauses.push_back({y_not_helpers[i-l],
                                    make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+        if(export_proof){
+            helper_map[-y_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            sat_constraint_clauses.push_back({y_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, true, i)});            
+        }
         } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_y_id, false, i)});
+            cnf_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+            }
         }
     }
 
-    int helper_id = next_helper_id++; 
+    Clause yes_helpers, not_helpers;
 
     for(int i = l; i <= u; i++){
-        LiteralPtr yes_helper1 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper1 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper2 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper2 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper3 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper3 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
+        yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+    }
 
-        
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
-                            make_literal(LiteralType::HELPER, helper_y_id, false, i),
-                            not_helper1});
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
-                            make_literal(LiteralType::HELPER, helper_y_id, true, i),
-                            not_helper1});                           
-        if(i != u){
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                                not_helper2});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i+1),
-                                not_helper2});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                                not_helper3});
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i+1),
-                                not_helper3});
-        } else {
-            cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                                not_helper2});
-            cnf_clauses.push_back({not_helper3});
-        }
+    for(int i = l; i < u; i++){
+
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
                                
-        cnf_clauses.push_back({yes_helper1, yes_helper2, yes_helper3});
 
-        LiteralPtr yes_helper4 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper4 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper5 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper5 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
+        if(export_proof){
 
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper4});     
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, ymax->id, false, i),
-                               not_helper4});                         
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper5});
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, ymax->id, true, i),
-                               not_helper5});
-
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, false, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, true, i),
-                               yes_helper4, yes_helper5});
-
-        LiteralPtr yes_helper6 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper6 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
-        LiteralPtr yes_helper7 = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
-        LiteralPtr not_helper7 = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l+1]});                           
+            helper_map[not_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l+1]});  
 
 
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, i),
-                               not_helper6});    
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, xmax->id, true, i-1),
-                               not_helper6});                        
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, i),
-                               not_helper7});
-        cnf_clauses.push_back({make_literal(LiteralType::ORDER, xmax->id, false, i-1),
-                               not_helper7});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+        }
 
-        cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_x_id, true, i),
-                               make_literal(LiteralType::HELPER, helper_y_id, false, i),
-                               yes_helper6, yes_helper7});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
 
+        if(export_proof){
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, false, i-1)});            
+
+        }
+
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});        
+
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            helper_map[-yes_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});            
+        }
+    }
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           x_yes_helpers[u-l],
+                           y_not_helpers[u-l]});
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l]});
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+    LiteralPtr yes_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0);
+    LiteralPtr not_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0);
+
+    cnf_clauses.push_back({yes_helpers[0], not_r});
+    cnf_clauses.push_back({not_helpers[0], yes_r});
+
+    if(export_proof){
+        helper_map[-yes_helpers[u-l]->id].push_back({x_yes_helpers[u-l], y_not_helpers[u-l]});
+        helper_map[not_helpers[u-l]->id].push_back({x_not_helpers[u-l]});
+        helper_map[not_helpers[u-l]->id].push_back({y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            x_yes_helpers[u-l],
+                            y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                            x_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                            y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[0], not_r});
+        sat_constraint_clauses.push_back({not_helpers[0], yes_r});  
+        definition_clauses.push_back({yes_helpers[0], not_r});
+        definition_clauses.push_back({not_helpers[0], yes_r});
+    }
+}
+
+// Encodes a constraint of type (x < y) => r
+void Encoder::encode_set_lt_imp(const BasicVar& x, const BasicVar& y, const BasicVar& r, CNF &cnf_clauses){
+    auto x_elems = *get_set_elems(x);
+    auto y_elems = *get_set_elems(y);
+    int n = x_elems.size();
+    int m = y_elems.size();
+
+    if(y_elems.size() == 0){
+        if(export_proof){
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (or (and (prefix " << *x.name << " " << *y.name << ") "
+                            << " (distinct " << *x.name << " " << *y.name << ")) "
+                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+        }
+
+        cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
+
+        if(export_proof)
+            sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
+
+        return;
+    }
+
+    if(x_elems.size() == 0){
+     
+        if(export_proof){
+        
+            needLex = true;
+            isLIA = true;
+
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (or (and (prefix " << *x.name << " " << *y.name << ") "
+                            << " (distinct " << *x.name << " " << *y.name << ")) "
+                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+        }
+
+        Clause c;
+        for(auto elem : y_elems){
+            c.push_back(make_literal(LiteralType::SET_ELEM, y.id, true, elem));
+        }
+
+        CNF temp_clauses = {c};
+
+        impify(temp_clauses, r, cnf_clauses);
+
+        return;
     }
 
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, true, l),
-                           make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
+    if(export_proof){
+        is2step = true;
+        needLex = true;
+        isLIA = true;
+        
+        constraint2step_set.insert(next_constraint_num);
 
-    cnf_clauses.push_back({make_literal(LiteralType::HELPER, helper_id, false, l),
-                           make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0)});
+
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        constraints2step1 << "(=> (= " << *r.name << " 1) (or (and (prefix " << *x.name << " " << *y.name << ") "
+                          << "(distinct " << *x.name << " " << *y.name << ")) "
+                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
+                          << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        constraints2step2 << "(and\n";
+    }
+
+
+    int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
+    int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
+
+    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+
+    set_max(*xmax, x, cnf_clauses);
+    set_max(*ymax, y, cnf_clauses);
+
+    if(export_proof){
+        int bv_diff = bv_right - bv_left + 1;
+
+
+        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
+        constraints2step2 << "(=> (= " << *r.name << " 1) (ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
+                          << bv_diff << ") (- (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
+                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
+                          <<  " (rightmost_one (bvxor " 
+                          << *x.name << " " << *y.name << ")))\n))\n)\n)\n";
+    }
+
+    Clause x_yes_helpers, x_not_helpers;
+    Clause y_yes_helpers, y_not_helpers;
+
+    for(int i = l; i <= u; i++){
+        x_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        x_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+        y_yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        y_not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+
+        bool x_found = false;
+        bool y_found = false;
+
+        for(auto x_elem : x_elems){
+            if(x_elem == i){
+                x_found = true;
+                break;
+            } 
+        }
+
+        for(auto y_elem : y_elems){
+            if(y_elem == i){
+                y_found = true;
+                break;
+            } 
+        }
+
+        if(x_found){
+            cnf_clauses.push_back({x_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+            cnf_clauses.push_back({x_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+            if(export_proof){
+                helper_map[-x_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, x.id, true, i)});
+
+                sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, false, i)});
+                sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                    make_literal(LiteralType::SET_ELEM, x.id, true, i)});                
+            }
+        } else {
+            cnf_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[x_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({x_not_helpers[i-l], make_literal(LiteralType::ORDER, xmax->id, true, l-2)});
+            }
+        }
+
+        if(y_found){
+            cnf_clauses.push_back({y_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            cnf_clauses.push_back({y_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+        if(export_proof){
+            helper_map[-y_yes_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::SET_ELEM, y.id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, false, i)});
+            sat_constraint_clauses.push_back({y_not_helpers[i-l],
+                                   make_literal(LiteralType::SET_ELEM, y.id, true, i)});            
+        }
+        } else {
+            cnf_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+
+            if(export_proof){
+                helper_map[y_not_helpers[i-l]->id].push_back({make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+        
+                sat_constraint_clauses.push_back({y_not_helpers[i-l], make_literal(LiteralType::ORDER, ymax->id, true, l-2)});
+            }
+        }
+    }
+
+    Clause yes_helpers, not_helpers;
+
+    for(int i = l; i <= u; i++){
+        yes_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id, true, 0));
+        not_helpers.push_back(make_literal(LiteralType::HELPER, next_helper_id++, false, 0));
+    }
+
+    for(int i = l; i < u; i++){
+
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_yes_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               yes_helpers[i-l+1]});
+        cnf_clauses.push_back({x_not_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               not_helpers[i-l+1]});
+                               
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l+1]});                           
+            helper_map[not_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l+1]});  
+
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_yes_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                yes_helpers[i-l+1]});
+            sat_constraint_clauses.push_back({x_not_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                not_helpers[i-l+1]});
+        }
+
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+        cnf_clauses.push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+        if(export_proof){
+            helper_map[not_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            helper_map[-yes_helpers[i-l]->id].push_back({x_yes_helpers[i-l],
+                               y_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, xmax->id, false, i-1)});
+
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                not_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, true, i-1)});
+            sat_constraint_clauses.push_back({x_yes_helpers[i-l],
+                                y_not_helpers[i-l],
+                                yes_helpers[i-l],
+                                make_literal(LiteralType::ORDER, xmax->id, false, i-1)});            
+
+        }
+
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+        cnf_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});        
+
+
+        if(export_proof){
+
+            helper_map[not_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            helper_map[-yes_helpers[i-l]->id].push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});
+
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               not_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, false, i)});
+            sat_constraint_clauses.push_back({y_yes_helpers[i-l],
+                               x_not_helpers[i-l],
+                               yes_helpers[i-l],
+                               make_literal(LiteralType::ORDER, ymax->id, true, i)});            
+        }
+    }
+
+    cnf_clauses.push_back({yes_helpers[u-l],
+                           x_yes_helpers[u-l],
+                           y_not_helpers[u-l]});
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           x_not_helpers[u-l]});
+
+    cnf_clauses.push_back({not_helpers[u-l],
+                           y_yes_helpers[u-l]});
+
+    LiteralPtr yes_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0);
+    LiteralPtr not_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0);
+
+    cnf_clauses.push_back({yes_helpers[0], not_r});
+
+    if(export_proof){
+        helper_map[-yes_helpers[u-l]->id].push_back({x_yes_helpers[u-l], y_not_helpers[u-l]});
+        helper_map[not_helpers[u-l]->id].push_back({x_not_helpers[u-l]});
+        helper_map[not_helpers[u-l]->id].push_back({y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[u-l],
+                            x_yes_helpers[u-l],
+                            y_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                            x_not_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({not_helpers[u-l],
+                            y_yes_helpers[u-l]});
+
+        sat_constraint_clauses.push_back({yes_helpers[0], not_r});
+        definition_clauses.push_back({yes_helpers[0], not_r});
+    }
 }
 
 // Encodes a constraint of type x ⊆ y
