@@ -6,7 +6,6 @@
 #include <string>
 #include <iostream>
 #include <unordered_map>
-#include <format>
 #include <cmath>
 #include <iterator>
 #include <fstream>

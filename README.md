@@ -4,10 +4,11 @@ This project is a **Flatzinc to SAT converter**. The converter takes a Flatzinc 
 
 ## Features
 
-- **Converts Flatzinc to SAT**: The primary functionality of this project is converting a Flatzinc model into a SAT problem.
-- **Encoding Constraints**: The converter supports the encoding of all the builtin Integer, Bool and Set FlatZinc constraints.
-- **Solving CSPs**: The converter can also be used as a CSP solver, as it invokes a backend SAT solver (MiniSAT, CaDiCaL or glucose) and decodes it's output.
-- **Proof export**: The converter can export a proof of correctness for the encoding in the SMT-LIB format.
+- **Converts Flatzinc to SAT**: The project converts FlatZinc models into equivalent SAT problems.
+- **Constraint encoding**: Supports encoding of all built-in FlatZinc Integer, Boolean, and Set constraints.
+- **CSP solving**: Can be used as a CSP solver by invoking a backend SAT solver (MiniSAT, CaDiCaL, or Glucose) and decoding its output.
+- **COP solving**: Supports solving constraint optimization problems (COPs) using a linear optimization strategy.
+- **Proof export**: Can export a set of SMT-LIB theorems, enabling the generation of correctness proofs for the encoding.
 
 ### Supported Constraints
 
@@ -17,7 +18,11 @@ The list of FlatZinc builtin constraints can be found [here](https://docs.minizi
 
 ## Installation
 
-Dependencies needed are flex (version 2.6.4 or greater), bison (version 3.8.2 or greater) and the minisat/CaDiCaL/glucose SAT solver (whichever you wish to use as the backend solver).
+Dependencies needed are:
+- flex (version 2.6.4 or greater)
+- bison (version 3.8.2 or greater)
+- a C++ compiler that supports the C++17 standard or greater
+- the MiniSAT/CaDiCaL/glucose SAT solver (whichever you wish to use as the backend solver).
 
 To get started with this project, clone the repository and follow the steps below:
 
@@ -52,4 +57,4 @@ To run the converter with a specific solver, use the option `-solver=solver_name
 ./flatzinc_to_sat -solver=cadical path/to/input.fzn
 ```
 
-If you wish to export a proof of correctness for the encoding, use the option `-export-proof`. The folder `proofs` will be created, and the file `proof.smt2` will contain the proof.
+If you wish to export a proof of correctness for the encoding, use the option `-export-proof`. The folder `proofs` will be created, and the file `proof.smt2` will contain a set of theorems which can be used for generating proofs of correctness for the encoding.

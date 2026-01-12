@@ -11,6 +11,24 @@ extern YYSTYPE yyval;
 
 vector<Item>* parsing_result = new vector<Item>;
 
+#include <fstream>
+#include <string>
+
+bool has_optimization_goal(const char* filename) {
+    ifstream in(filename);
+    if (!in) return false;
+
+    string line;
+    while (getline(in, line)) {
+        if (line.find("solve") != string::npos && (line.find("minimize") != string::npos ||
+            line.find("maximize") != string::npos)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
 int main(int argc, char** argv) {
 
     ios::sync_with_stdio(false);
@@ -52,6 +70,13 @@ int main(int argc, char** argv) {
             cerr << "Unknown option: " << arg << endl;
             return 1;
         }
+    }
+
+    if(input_file && has_optimization_goal(input_file)){
+        string cmd = "./optimizer ";
+        cmd += input_file;
+        system(cmd.c_str());
+        return 0;
     }
 
     if (input_file) {

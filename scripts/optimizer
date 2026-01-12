@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# Error handling
+
+die() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+# Input
+
+if [ $# -ne 1 ]; then
+    die "Usage: $0 model.fzn"
+fi
+
+INPUT_FZN="$1"
+[ -f "$INPUT_FZN" ] || die "Input file does not exist: $INPUT_FZN"
+
+INPUT_DIR="$(cd "$(dirname "$INPUT_FZN")" && pwd)"
+INPUT_BASE="$(basename "$INPUT_FZN" .fzn)"
+
+# Files/constants
+
+WORK_FZN="${INPUT_DIR}/${INPUT_BASE}_work.fzn"
+BOUND_ANN="OPT_BOUND"
+
+# Cleanup
+
+cleanup() {
+    rm -f \
+        "${INPUT_DIR}/${INPUT_BASE}_satisfy.fzn" \
+        "${INPUT_DIR}/${INPUT_BASE}_work.fzn" \
+        "${INPUT_DIR}/${INPUT_BASE}.opt" \
+        "${INPUT_DIR}/${INPUT_BASE}.best" \
+        "${INPUT_DIR}/${INPUT_BASE}.proof" \
+        formula.cnf \
+        model.out
+}
+trap cleanup EXIT
+
+# Parse solve goal 
+
+RAW_SOLVE_LINE=$(grep -E '^solve[[:space:]]' "$INPUT_FZN" || true)
+[ -n "$RAW_SOLVE_LINE" ] || die "No solve goal found in $INPUT_FZN"
+
+CORE_SOLVE=$(echo "$RAW_SOLVE_LINE" \
+    | sed -E 's/^solve[[:space:]]+.*[[:space:]]+(satisfy|minimize|maximize)[[:space:]]+/\1 /')
+
+OPT_TYPE=""
+OPT_VAR=""
+
+if echo "$CORE_SOLVE" | grep -qE '^satisfy[[:space:]]*;'; then
+    OPT_TYPE=""
+elif echo "$CORE_SOLVE" | grep -qE '^(minimize|maximize)[[:space:]]+'; then
+    OPT_TYPE=$(echo "$CORE_SOLVE" \
+        | sed -E 's/^(minimize|maximize)[[:space:]]+.*/\1/')
+
+    OPT_VAR=$(echo "$CORE_SOLVE" \
+        | sed -E 's/^(minimize|maximize)[[:space:]]+([^;[:space:]]+)[[:space:]]*;.*/\2/')
+
+    [ -n "$OPT_VAR" ] || die "Failed to parse objective variable from solve goal: '$RAW_SOLVE_LINE'"
+else
+    die "Unrecognized solve goal: '$RAW_SOLVE_LINE'"
+fi
+
+# Rewrite solve goal -> satisfy 
+sed -E 's/^solve[[:space:]]+.*;/solve satisfy;/' \
+    "$INPUT_FZN" > "$WORK_FZN" \
+    || die "Failed to rewrite solve goal"
+
+
+# Linear search
+
+BEST_VALUE=""
+FIRST_RUN=1
+
+while true; do
+    SOLVER_OUTPUT=$(./flatzinc_to_sat "$WORK_FZN") \
+        || die "Solver failed on $WORK_FZN"
+
+    STATUS=$(printf "%s\n" "$SOLVER_OUTPUT" | head -n 1)
+
+    if [ "$STATUS" = "UNSAT" ]; then
+        if [ "$FIRST_RUN" -eq 1 ]; then
+            rm -rf proofs proofs_step1
+
+            ./flatzinc_to_sat -export-proof "$WORK_FZN" >/dev/null \
+                || die "Solver failed while exporting UNSAT proof (initial)"
+
+            [ -d proofs ] || die "Expected proofs folder not created (initial UNSAT)"
+
+            rm -rf proofs_unsat
+            mv proofs proofs_unsat
+
+            if [ -d proofs_step1 ]; then
+                rm -rf proofs_step1_unsat
+                mv proofs_step1 proofs_step1_unsat
+            fi
+
+            echo "UNSAT"
+            exit 0
+        fi
+        break
+    fi
+
+    [ "$STATUS" = "SAT" ] || die "Unexpected solver status: '$STATUS'"
+
+    FIRST_RUN=0
+
+    CUR_VALUE=$(printf "%s\n" "$SOLVER_OUTPUT" \
+        | grep -E "^${OPT_VAR}[[:space:]]*=" \
+        | sed -E "s/^${OPT_VAR}[[:space:]]*=[[:space:]]*([^;[:space:]]+).*/\1/")
+
+    [ -n "$CUR_VALUE" ] || die "Objective variable '$OPT_VAR' not found in solver output"
+
+    BEST_VALUE="$CUR_VALUE"
+
+    if [ "$OPT_TYPE" = "maximize" ]; then
+        NEW_CONSTRAINT="constraint int_lt(${BEST_VALUE}, ${OPT_VAR}) :: ${BOUND_ANN};"
+    elif [ "$OPT_TYPE" = "minimize" ]; then
+        NEW_CONSTRAINT="constraint int_lt(${OPT_VAR}, ${BEST_VALUE}) :: ${BOUND_ANN};"
+    else
+        break
+    fi
+
+    awk -v c="$NEW_CONSTRAINT" -v ann="$BOUND_ANN" '
+        $0 ~ "::[[:space:]]*" ann { next }
+        /^solve[[:space:]]+satisfy[[:space:]]*;/ { print c }
+        { print }
+    ' "$WORK_FZN" > "${WORK_FZN}.tmp" \
+        || die "Failed to inject bound constraint"
+
+    mv "${WORK_FZN}.tmp" "$WORK_FZN"
+done
+
+# Export UNSAT proof 
+
+rm -rf proofs proofs_step1
+
+./flatzinc_to_sat -export-proof "$WORK_FZN" >/dev/null \
+    || die "Solver failed while exporting optimality UNSAT proof"
+
+[ -d proofs ] || die "Expected proofs folder not created (optimality UNSAT)"
+
+rm -rf proofs_unsat
+mv proofs proofs_unsat
+
+if [ -d proofs_step1 ]; then
+    rm -rf proofs_step1_unsat
+    mv proofs_step1 proofs_step1_unsat
+fi
+
+# Replace bound with equality
+
+[ -n "$BEST_VALUE" ] || die "Internal error: BEST_VALUE is empty"
+
+EQ_CONSTRAINT="constraint int_eq(${OPT_VAR}, ${BEST_VALUE}) :: ${BOUND_ANN};"
+
+awk -v c="$EQ_CONSTRAINT" -v ann="$BOUND_ANN" '
+    $0 ~ "::[[:space:]]*" ann { print c; next }
+    { print }
+' "$WORK_FZN" > "${WORK_FZN}.tmp" \
+    || die "Failed to replace bound with equality constraint"
+
+mv "${WORK_FZN}.tmp" "$WORK_FZN"
+
+# Export SAT proof
+
+rm -rf proofs proofs_step1
+
+FINAL_OUTPUT=$(./flatzinc_to_sat -export-proof "$WORK_FZN") \
+    || die "Solver failed while exporting SAT proof"
+
+[ -d proofs ] || die "Expected proofs folder not created (SAT)"
+
+rm -rf proofs_sat
+mv proofs proofs_sat
+
+if [ -d proofs_step1 ]; then
+    rm -rf proofs_step1_sat
+    mv proofs_step1 proofs_step1_sat
+fi
+
+# Output
+
+printf "%s\n" "$FINAL_OUTPUT"

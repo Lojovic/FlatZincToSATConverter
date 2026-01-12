@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 
 project(FlatzincConverter VERSION 1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(PARSER_FILE ${CMAKE_SOURCE_DIR}/parser_gen/parser.ypp)
@@ -64,14 +64,20 @@ set(HEADERS
     includes/encoder.hpp
 )
 
-# Define executable target
 add_executable(flatzinc_to_sat ${SOURCES})
 
-# Make sure flatzinc_to_sat depends on the generate_lexer target
 add_dependencies(generate_lexer generate_parser)
 add_dependencies(flatzinc_to_sat generate_lexer)
 
 target_include_directories(flatzinc_to_sat PRIVATE ${CMAKE_SOURCE_DIR}/includes)
 
-# Ensure compilation options are set
 target_compile_options(flatzinc_to_sat PRIVATE -Wall -g)
+
+add_custom_command(
+    TARGET flatzinc_to_sat
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/scripts/optimizer
+            $<TARGET_FILE_DIR:flatzinc_to_sat>/optimizer
+)
+
