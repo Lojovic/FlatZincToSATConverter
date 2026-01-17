@@ -1519,131 +1519,162 @@ void Encoder::generate_proof(){
 
     system("cat smt_sat_funs.smt2 >> proof.smt2");
 
-    for(int i = 1; i < smt_subspace_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check SMT containing " << i << "\")\n";
-        proof_file << "(assert (and smt_encode (not smt_subspace" << i << ")))\n";
+    system("rm -f smt_containing_proof.smt2");
+    ofstream smt_containing_proof = ofstream("smt_containing_proof.smt2", ios::app);
 
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"smt_containing_proof" << i <<".out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+    system("cat proof.smt2 >> smt_containing_proof.smt2");
+
+    for(int i = 1; i < smt_subspace_num; i++){
+        smt_containing_proof << "(push)\n";
+        smt_containing_proof << "(echo \"Check SMT containing " << i << "\")\n";
+        smt_containing_proof << "(assert (and smt_encode (not smt_subspace" << i << ")))\n";
+        smt_containing_proof << "(check-sat)\n";
+        smt_containing_proof << "(set-option :regular-output-channel \"smt_containing_proof" << i <<".out\")\n";
+        smt_containing_proof << "(get-proof)\n";
+        smt_containing_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        smt_containing_proof << "(pop)\n\n";
 
     }
+
+    smt_containing_proof.close();
+
+    system("rm -f sat_containing_proof.smt2");
+    ofstream sat_containing_proof = ofstream("sat_containing_proof.smt2", ios::app);
+
+    system("cat proof.smt2 >> sat_containing_proof.smt2");
+
+    for(int i = 1; i < sat_subspace_num; i++){
+        sat_containing_proof << "(push)\n";
+        sat_containing_proof << "(echo \"Check SAT containing " << i << "\")\n";
+        sat_containing_proof << "(assert (and sat_encode (not sat_subspace" << i << ")))\n";
+        sat_containing_proof << "(check-sat)\n";
+        sat_containing_proof << "(set-option :regular-output-channel \"sat_containing_proof" << i <<".out\")\n";
+        sat_containing_proof << "(get-proof)\n";
+        sat_containing_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        sat_containing_proof << "(pop)\n\n";
+
+    }
+
+    sat_containing_proof.close();
+
+    system("rm -f left_total_proof.smt2");
+    ofstream left_total_proof = ofstream("left_total_proof.smt2", ios::app);
+
+    system("cat proof.smt2 >> left_total_proof.smt2");
+
+    for(int i = 1; i < smt_sat_rel_num; i++){
+        left_total_proof << "(push)\n";
+        left_total_proof << "(echo \"Check left-total R" << i << "\")\n";
+        left_total_proof << "(assert (and\n";
+        left_total_proof << "smt_subspace" << endl;
+        system("cat left_total.smt2 >> left_total_proof.smt2");
+        left_total_proof << "(not smt_sat_rel" << i << ")\n";
+        left_total_proof << ")\n)\n";
+        left_total_proof << "(check-sat)\n";
+        left_total_proof << "(set-option :regular-output-channel \"left_total_r" << i << "_proof.out\")\n";
+        left_total_proof << "(get-proof)\n";
+        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        left_total_proof << "(pop)\n\n";
+    }
+
 
 
     for(int i = 1; i < sat_subspace_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check SAT containing " << i << "\")\n";
-        proof_file << "(assert (and sat_encode (not sat_subspace" << i << ")))\n";
-
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"sat_containing_proof" << i <<".out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        left_total_proof << "(push)\n";
+        left_total_proof << "(echo \"Check left-total " << i << "\")\n";
+        left_total_proof << "(assert (and\n";
+        left_total_proof << "smt_subspace" << endl;
+        system("cat left_total.smt2 >> left_total_proof.smt2");
+        left_total_proof << "(not sat_subspace" << i << ")\n";
+        left_total_proof << ")\n)\n";
+        left_total_proof << "(check-sat)\n";
+        left_total_proof << "(set-option :regular-output-channel \"left_total_" << i << "_proof.out\")\n";
+        left_total_proof << "(get-proof)\n";
+        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        left_total_proof << "(pop)\n\n";
 
     }
+
+    left_total_proof.close();
+
+    system("rm -f right_total_proof.smt2");
+    ofstream right_total_proof = ofstream("right_total_proof.smt2", ios::app);
+
+    system("cat proof.smt2 >> right_total_proof.smt2");
 
     for(int i = 1; i < smt_sat_rel_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check left-total R" << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "smt_subspace" << endl;
-        system("cat left_total.smt2 >> proof.smt2");
-        proof_file << "(not smt_sat_rel" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"left_total_r" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
-    }
-
-    for(int i = 1; i < sat_subspace_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check left-total " << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "smt_subspace" << endl;
-        system("cat left_total.smt2 >> proof.smt2");
-        proof_file << "(not sat_subspace" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"left_total_" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
-
-    }
-
-    for(int i = 1; i < smt_sat_rel_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check right-total R" << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "sat_subspace" << endl;
-        system("cat right_total.smt2 >> proof.smt2");
-        proof_file << "(not smt_sat_rel" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"right_total_r" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        right_total_proof << "(push)\n";
+        right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
+        right_total_proof << "(assert (and\n";
+        right_total_proof << "sat_subspace" << endl;
+        system("cat right_total.smt2 >> right_total_proof.smt2");
+        right_total_proof << "(not smt_sat_rel" << i << ")\n";
+        right_total_proof << ")\n)\n";
+        right_total_proof << "(check-sat)\n";
+        right_total_proof << "(set-option :regular-output-channel \"right_total_r" << i << "_proof.out\")\n";
+        right_total_proof << "(get-proof)\n";
+        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        right_total_proof << "(pop)\n\n";
     }
 
     for(int i = 1; i < smt_subspace_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check right-total " << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "sat_subspace" << endl;
-        system("cat right_total.smt2 >> proof.smt2");
-        proof_file << "(not smt_subspace" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        right_total_proof << "(push)\n";
+        right_total_proof << "(echo \"Check right-total " << i << "\")\n";
+        right_total_proof << "(assert (and\n";
+        right_total_proof << "sat_subspace" << endl;
+        system("cat right_total.smt2 >> right_total_proof.smt2");
+        right_total_proof << "(not smt_subspace" << i << ")\n";
+        right_total_proof << ")\n)\n";
+        right_total_proof << "(check-sat)\n";
+        right_total_proof << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
+        right_total_proof << "(get-proof)\n";
+        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        right_total_proof << "(pop)\n\n";
 
     }
 
-    proof_file << "\n";
+    right_total_proof.close();
 
-    proof_file << "(push)\n";
-    proof_file << "(echo \"Check soundness dom\")\n";
-    proof_file << "(assert (and\n";
-    proof_file << "smt_subspace\n";
-    proof_file << "sat_subspace\n";
-    proof_file << "smt_sat_rel\n";
-    proof_file << "(distinct smt_dom sat_dom)\n";
-    proof_file << ")\n";
-    proof_file << ")\n";
+    system("rm -f soundness_proof.smt2");
+    ofstream soundness_proof = ofstream("soundness_proof.smt2", ios::app);
 
-    proof_file << "(check-sat)\n";
-    proof_file << "(set-option :regular-output-channel \"soundness_proof_dom.out\")\n";
-    proof_file << "(get-proof)\n";
-    proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-    proof_file << "(pop)\n\n";
+    system("cat proof.smt2 >> soundness_proof.smt2");
+
+    soundness_proof << "\n";
+    soundness_proof << "(push)\n";
+    soundness_proof << "(echo \"Check soundness dom\")\n";
+    soundness_proof << "(assert (and\n";
+    soundness_proof << "smt_subspace\n";
+    soundness_proof << "sat_subspace\n";
+    soundness_proof << "smt_sat_rel\n";
+    soundness_proof << "(distinct smt_dom sat_dom)\n";
+    soundness_proof << ")\n";
+    soundness_proof << ")\n";
+    soundness_proof << "(check-sat)\n";
+    soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom.out\")\n";
+    soundness_proof << "(get-proof)\n";
+    soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
+    soundness_proof << "(pop)\n\n";
 
     for(int i = 1; i < next_constraint_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check soundness c" << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "           smt_subspace\n";
-        proof_file << "           sat_subspace\n";
-        proof_file << "           smt_sat_rel\n";
-        proof_file << "           (distinct smt_c" << i << " sat_c" << i << ")\n";
-        proof_file << "        )\n";
-        proof_file << ")\n";
-
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        soundness_proof << "(push)\n";
+        soundness_proof << "(echo \"Check soundness c" << i << "\")\n";
+        soundness_proof << "(assert (and\n";
+        soundness_proof << "           smt_subspace\n";
+        soundness_proof << "           sat_subspace\n";
+        soundness_proof << "           smt_sat_rel\n";
+        soundness_proof << "           (distinct smt_c" << i << " sat_c" << i << ")\n";
+        soundness_proof << "        )\n";
+        soundness_proof << ")\n";
+        soundness_proof << "(check-sat)\n";
+        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
+        soundness_proof << "(get-proof)\n";
+        soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        soundness_proof << "(pop)\n\n";
 
     }
+
+    soundness_proof.close();
 
 
     system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2 *subspace.smt2");
@@ -1652,8 +1683,9 @@ void Encoder::generate_proof(){
     system("rm -f connection2step.smt2 constraints2step1.smt2 constraints2step2.smt2 domains2step.smt2");
     system("rm -f left_total_step1.smt2 smt_step1_funs.smt2 smt_subspace_step1.smt2");
 
+    system("rm proof.smt2");
     system("mkdir -p proofs");
-    system("mv proof.smt2 proofs");
+    system("mv *.smt2 proofs");
 
     proof_file.close();
 }
@@ -1851,128 +1883,155 @@ void Encoder::generate_proof2step(){
 
     system("mkdir -p proofs_step1");
 
-    for(int i = 1; i < smt_subspace_step1_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check SMT step 1 containing " << i << "\")\n";
-        proof_file << "(assert (and smt_encode_step1 (not smt_subspace_step1_" << i << ")))\n";
+    system("rm -f smt_containing_step1_proof_step1.smt2");
+    ofstream smt_containing_step1_proof_step1 = ofstream("smt_containing_step1_proof_step1.smt2", ios::app);
 
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"smt_containing_step1_proof" << i <<".out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+    system("cat proof_step1.smt2 >> smt_containing_step1_proof_step1.smt2");
+
+    for(int i = 1; i < smt_subspace_step1_num; i++){
+        smt_containing_step1_proof_step1 << "(push)\n";
+        smt_containing_step1_proof_step1 << "(echo \"Check SMT step 1 containing " << i << "\")\n";
+        smt_containing_step1_proof_step1 << "(assert (and smt_encode_step1 (not smt_subspace_step1_" << i << ")))\n";
+        smt_containing_step1_proof_step1 << "(check-sat)\n";
+        smt_containing_step1_proof_step1 << "(set-option :regular-output-channel \"smt_containing_step1_proof" << i <<".out\")\n";
+        smt_containing_step1_proof_step1 << "(get-proof)\n";
+        smt_containing_step1_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+        smt_containing_step1_proof_step1 << "(pop)\n\n";
 
     }
+
+    smt_containing_step1_proof_step1.close();
+
+    system("rm -f smt_containing_step2_proof_step1.smt2");
+    ofstream smt_containing_step2_proof_step1 = ofstream("smt_containing_step2_proof_step1.smt2", ios::app);
+
+    system("cat proof_step1.smt2 >> smt_containing_step2_proof_step1.smt2");
 
 
     for(int i = 1; i < smt_subspace_step2_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check SMT step 2 containing " << i << "\")\n";
-        proof_file << "(assert (and smt_encode (not smt_subspace" << i << ")))\n";
-
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"smt_containing_step2_proof" << i <<".out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        smt_containing_step2_proof_step1 << "(push)\n";
+        smt_containing_step2_proof_step1 << "(echo \"Check SMT step 2 containing " << i << "\")\n";
+        smt_containing_step2_proof_step1 << "(assert (and smt_encode (not smt_subspace" << i << ")))\n";
+        smt_containing_step2_proof_step1 << "(check-sat)\n";
+        smt_containing_step2_proof_step1 << "(set-option :regular-output-channel \"smt_containing_step2_proof" << i <<".out\")\n";
+        smt_containing_step2_proof_step1 << "(get-proof)\n";
+        smt_containing_step2_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+        smt_containing_step2_proof_step1 << "(pop)\n\n";
 
     }
 
+    system("rm -f left_total_proof_step1.smt2");
+    ofstream left_total_proof_step1 = ofstream("left_total_proof_step1.smt2", ios::app);
 
-    proof_file << "(push)\n";
-    proof_file << "(echo \"Check left-total step 1 R\")\n";
-    proof_file << "(assert (and\n";
-    proof_file << "smt_subspace_step1" << endl;
-    system("cat left_total_step1.smt2 >> proof_step1.smt2");
-    proof_file << "(not smt_step1_rel )\n";
-    proof_file << ")\n)\n";
-    proof_file << "(check-sat)\n";
-    proof_file << "(set-option :regular-output-channel \"left_total_step1_r_proof.out\")\n";
-    proof_file << "(get-proof)\n";
-    proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-    proof_file << "(pop)\n\n";
+    system("cat proof_step1.smt2 >> left_total_proof_step1.smt2");
+
+    left_total_proof_step1 << "(push)\n";
+    left_total_proof_step1 << "(echo \"Check left-total step 1 R\")\n";
+    left_total_proof_step1 << "(assert (and\n";
+    left_total_proof_step1 << "smt_subspace_step1" << endl;
+    system("cat left_total_step1.smt2 >> left_total_proof_step1.smt2");
+    left_total_proof_step1 << "(not smt_step1_rel )\n";
+    left_total_proof_step1 << ")\n)\n";
+    left_total_proof_step1 << "(check-sat)\n";
+    left_total_proof_step1 << "(set-option :regular-output-channel \"left_total_step1_r_proof.out\")\n";
+    left_total_proof_step1 << "(get-proof)\n";
+    left_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+    left_total_proof_step1 << "(pop)\n\n";
     
 
     for(int i = 1; i < smt_subspace_step2_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check left-total step 1 " << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "smt_subspace_step1" << endl;
-        system("cat left_total_step1.smt2 >> proof_step1.smt2");
-        proof_file << "(not smt_subspace" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"left_total_step1_" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        left_total_proof_step1 << "(push)\n";
+        left_total_proof_step1 << "(echo \"Check left-total step 1 " << i << "\")\n";
+        left_total_proof_step1 << "(assert (and\n";
+        left_total_proof_step1 << "smt_subspace_step1" << endl;
+        system("cat left_total_step1.smt2 >> left_total_proof_step1.smt2");
+        left_total_proof_step1 << "(not smt_subspace" << i << ")\n";
+        left_total_proof_step1 << ")\n)\n";
+        left_total_proof_step1 << "(check-sat)\n";
+        left_total_proof_step1 << "(set-option :regular-output-channel \"left_total_step1_" << i << "_proof.out\")\n";
+        left_total_proof_step1 << "(get-proof)\n";
+        left_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+        left_total_proof_step1 << "(pop)\n\n";
 
     }
 
-    proof_file << "(push)\n";
-    proof_file << "(echo \"Check right-total step 1 R\")\n";
-    proof_file << "(assert (and\n";
-    proof_file << "smt_subspace" << endl;
-    proof_file << "(not smt_step1_rel )\n";
-    proof_file << ")\n)\n";
-    proof_file << "(check-sat)\n";
-    proof_file << "(set-option :regular-output-channel \"right_total_step1_r_proof.out\")\n";
-    proof_file << "(get-proof)\n";
-    proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-    proof_file << "(pop)\n\n";
+    left_total_proof_step1.close();
+
+    system("rm -f right_total_proof_step1.smt2");
+    ofstream right_total_proof_step1 = ofstream("right_total_proof_step1.smt2", ios::app);
+
+    system("cat proof_step1.smt2 >> right_total_proof_step1.smt2");
+
+    right_total_proof_step1 << "(push)\n";
+    right_total_proof_step1 << "(echo \"Check right-total step 1 R\")\n";
+    right_total_proof_step1 << "(assert (and\n";
+    right_total_proof_step1 << "smt_subspace" << endl;
+    right_total_proof_step1 << "(not smt_step1_rel )\n";
+    right_total_proof_step1 << ")\n)\n";
+    right_total_proof_step1 << "(check-sat)\n";
+    right_total_proof_step1 << "(set-option :regular-output-channel \"right_total_step1_r_proof.out\")\n";
+    right_total_proof_step1 << "(get-proof)\n";
+    right_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+    right_total_proof_step1 << "(pop)\n\n";
 
     for(int i = 1; i < smt_subspace_step1_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check right-total " << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "smt_subspace" << endl;
-        proof_file << "(not smt_subspace_step1_" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"right_total_step1_" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        right_total_proof_step1 << "(push)\n";
+        right_total_proof_step1 << "(echo \"Check right-total " << i << "\")\n";
+        right_total_proof_step1 << "(assert (and\n";
+        right_total_proof_step1 << "smt_subspace" << endl;
+        right_total_proof_step1 << "(not smt_subspace_step1_" << i << ")\n";
+        right_total_proof_step1 << ")\n)\n";
+        right_total_proof_step1 << "(check-sat)\n";
+        right_total_proof_step1 << "(set-option :regular-output-channel \"right_total_step1_" << i << "_proof.out\")\n";
+        right_total_proof_step1 << "(get-proof)\n";
+        right_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+        right_total_proof_step1 << "(pop)\n\n";
 
     }
 
+    right_total_proof_step1.close();
 
+    system("rm -f soundness_proof_step1.smt2");
+    ofstream soundness_proof_step1 = ofstream("soundness_proof_step1.smt2", ios::app);
 
-    proof_file << "(push)\n";
-    proof_file << "(echo \"Check soundness dom step 1\")\n";
-    proof_file << "(assert (and\n";
-    proof_file << "smt_subspace_step1\n";
-    proof_file << "smt_subspace\n";
-    proof_file << "smt_step1_rel\n";
-    proof_file << "(distinct smt_dom_step1 smt_dom)\n";
-    proof_file << ")\n";
-    proof_file << ")\n";
-    proof_file << "(check-sat)\n";
-    proof_file << "(set-option :regular-output-channel \"soundness_proof_dom.out\")\n";
-    proof_file << "(get-proof)\n";
-    proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-    proof_file << "(pop)\n\n";
+    system("cat proof_step1.smt2 >> soundness_proof_step1.smt2");    
+
+    soundness_proof_step1 << "(push)\n";
+    soundness_proof_step1 << "(echo \"Check soundness dom step 1\")\n";
+    soundness_proof_step1 << "(assert (and\n";
+    soundness_proof_step1 << "smt_subspace_step1\n";
+    soundness_proof_step1 << "smt_subspace\n";
+    soundness_proof_step1 << "smt_step1_rel\n";
+    soundness_proof_step1 << "(distinct smt_dom_step1 smt_dom)\n";
+    soundness_proof_step1 << ")\n";
+    soundness_proof_step1 << ")\n";
+    soundness_proof_step1 << "(check-sat)\n";
+    soundness_proof_step1 << "(set-option :regular-output-channel \"soundness_proof_dom.out\")\n";
+    soundness_proof_step1 << "(get-proof)\n";
+    soundness_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+    soundness_proof_step1 << "(pop)\n\n";
 
     for(int i = 1; i < next_constraint_num; i++){
         if(constraint2step_set.find(i) != constraint2step_set.end()){
-            proof_file << "(push)\n";
-            proof_file << "(echo \"Check soundness c" << i << " step 1\")\n";
-            proof_file << "(assert (and\n";
-            proof_file << "           smt_subspace_step1\n";
-            proof_file << "           smt_subspace\n";
-            proof_file << "           smt_step1_rel\n";
-            proof_file << "           (distinct smt_c" << i << "_step1 smt_c" << i << ")\n";
-            proof_file << "        )\n";
-            proof_file << ")\n";
-
-            proof_file << "(check-sat)\n";
-            proof_file << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
-            proof_file << "(get-proof)\n";
-            proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-            proof_file << "(pop)\n\n";
+            soundness_proof_step1 << "(push)\n";
+            soundness_proof_step1 << "(echo \"Check soundness c" << i << " step 1\")\n";
+            soundness_proof_step1 << "(assert (and\n";
+            soundness_proof_step1 << "           smt_subspace_step1\n";
+            soundness_proof_step1 << "           smt_subspace\n";
+            soundness_proof_step1 << "           smt_step1_rel\n";
+            soundness_proof_step1 << "           (distinct smt_c" << i << "_step1 smt_c" << i << ")\n";
+            soundness_proof_step1 << "        )\n";
+            soundness_proof_step1 << ")\n";
+            soundness_proof_step1 << "(check-sat)\n";
+            soundness_proof_step1 << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
+            soundness_proof_step1 << "(get-proof)\n";
+            soundness_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+            soundness_proof_step1 << "(pop)\n\n";
         }
 
     }
+
+    soundness_proof_step1.close();
 
     proof_file.close();
     system("rm -f proof.smt2");
@@ -2169,132 +2228,160 @@ void Encoder::generate_proof2step(){
 
     system("mkdir -p proofs");
 
-    for(int i = 1; i < smt_subspace_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check SMT containing " << i << "\")\n";
-        proof_file << "(assert (and smt_encode (not smt_subspace" << i << ")))\n";
+    system("rm -f smt_containing_proof.smt2");
+    ofstream smt_containing_proof = ofstream("smt_containing_proof.smt2", ios::app);
 
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"smt_containing_proof" << i <<".out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
-
-    }
-
-
-    for(int i = 1; i < sat_subspace_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check SAT containing " << i << "\")\n";
-        proof_file << "(assert (and sat_encode (not sat_subspace" << i << ")))\n";
-
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"sat_containing_proof" << i <<".out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
-
-    }
-
-    for(int i = 1; i < smt_sat_rel_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check left-total R" << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "smt_subspace" << endl;
-        system("cat left_total.smt2 >> proof.smt2");
-        proof_file << "(not smt_sat_rel" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"left_total_r" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
-    }
-
-    for(int i = 1; i < sat_subspace_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check left-total " << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "smt_subspace" << endl;
-        system("cat left_total.smt2 >> proof.smt2");
-        proof_file << "(not sat_subspace" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"left_total_" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
-
-    }
-
-    for(int i = 1; i < smt_sat_rel_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check right-total R" << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "sat_subspace" << endl;
-        system("cat right_total.smt2 >> proof.smt2");
-        proof_file << "(not smt_sat_rel" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"right_total_r" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
-    }
+    system("cat proof.smt2 >> smt_containing_proof.smt2");    
 
     for(int i = 1; i < smt_subspace_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check right-total " << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "sat_subspace" << endl;
-        system("cat right_total.smt2 >> proof.smt2");
-        proof_file << "(not smt_subspace" << i << ")\n";
-        proof_file << ")\n)\n";
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        smt_containing_proof << "(push)\n";
+        smt_containing_proof << "(echo \"Check SMT containing " << i << "\")\n";
+        smt_containing_proof << "(assert (and smt_encode (not smt_subspace" << i << ")))\n";
+        smt_containing_proof << "(check-sat)\n";
+        smt_containing_proof << "(set-option :regular-output-channel \"smt_containing_proof" << i <<".out\")\n";
+        smt_containing_proof << "(get-proof)\n";
+        smt_containing_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        smt_containing_proof << "(pop)\n\n";
 
     }
 
-    proof_file << "\n";
+    smt_containing_proof.close();
 
-    proof_file << "(push)\n";
-    proof_file << "(echo \"Check soundness dom\")\n";
-    proof_file << "(assert (and\n";
-    proof_file << "smt_subspace\n";
-    proof_file << "sat_subspace\n";
-    proof_file << "smt_sat_rel\n";
-    proof_file << "(distinct smt_dom sat_dom)\n";
-    proof_file << ")\n";
-    proof_file << ")\n";
+    system("rm -f sat_containing_proof.smt2");
+    ofstream sat_containing_proof = ofstream("sat_containing_proof.smt2", ios::app);
 
-    proof_file << "(check-sat)\n";
-    proof_file << "(set-option :regular-output-channel \"soundness_proof_dom.out\")\n";
-    proof_file << "(get-proof)\n";
-    proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-    proof_file << "(pop)\n\n";
+    system("cat proof.smt2 >> sat_containing_proof.smt2");    
+
+    for(int i = 1; i < sat_subspace_num; i++){
+        sat_containing_proof << "(push)\n";
+        sat_containing_proof << "(echo \"Check SAT containing " << i << "\")\n";
+        sat_containing_proof << "(assert (and sat_encode (not sat_subspace" << i << ")))\n";
+        sat_containing_proof << "(check-sat)\n";
+        sat_containing_proof << "(set-option :regular-output-channel \"sat_containing_proof" << i <<".out\")\n";
+        sat_containing_proof << "(get-proof)\n";
+        sat_containing_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        sat_containing_proof << "(pop)\n\n";
+
+    }
+
+    sat_containing_proof.close();
+
+    system("rm -f left_total_proof.smt2");
+    ofstream left_total_proof = ofstream("left_total_proof.smt2", ios::app);
+
+    system("cat proof.smt2 >> left_total_proof.smt2");    
+
+    for(int i = 1; i < smt_sat_rel_num; i++){
+        left_total_proof << "(push)\n";
+        left_total_proof << "(echo \"Check left-total R" << i << "\")\n";
+        left_total_proof << "(assert (and\n";
+        left_total_proof << "smt_subspace" << endl;
+        system("cat left_total.smt2 >> left_total_proof.smt2");
+        left_total_proof << "(not smt_sat_rel" << i << ")\n";
+        left_total_proof << ")\n)\n";
+        left_total_proof << "(check-sat)\n";
+        left_total_proof << "(set-option :regular-output-channel \"left_total_r" << i << "_proof.out\")\n";
+        left_total_proof << "(get-proof)\n";
+        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        left_total_proof << "(pop)\n\n";
+    }
+
+    for(int i = 1; i < sat_subspace_num; i++){
+        left_total_proof << "(push)\n";
+        left_total_proof << "(echo \"Check left-total " << i << "\")\n";
+        left_total_proof << "(assert (and\n";
+        left_total_proof << "smt_subspace" << endl;
+        system("cat left_total.smt2 >> left_total_proof.smt2");
+        left_total_proof << "(not sat_subspace" << i << ")\n";
+        left_total_proof << ")\n)\n";
+        left_total_proof << "(check-sat)\n";
+        left_total_proof << "(set-option :regular-output-channel \"left_total_" << i << "_proof.out\")\n";
+        left_total_proof << "(get-proof)\n";
+        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        left_total_proof << "(pop)\n\n";
+
+    }
+
+    left_total_proof.close();
+
+    system("rm -f right_total_proof.smt2");
+    ofstream right_total_proof = ofstream("right_total_proof.smt2", ios::app);
+
+    system("cat proof.smt2 >> right_total_proof.smt2");    
+
+    for(int i = 1; i < smt_sat_rel_num; i++){
+        right_total_proof << "(push)\n";
+        right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
+        right_total_proof << "(assert (and\n";
+        right_total_proof << "sat_subspace" << endl;
+        system("cat right_total.smt2 >> right_total_proof.smt2");
+        right_total_proof << "(not smt_sat_rel" << i << ")\n";
+        right_total_proof << ")\n)\n";
+        right_total_proof << "(check-sat)\n";
+        right_total_proof << "(set-option :regular-output-channel \"right_total_r" << i << "_proof.out\")\n";
+        right_total_proof << "(get-proof)\n";
+        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        right_total_proof << "(pop)\n\n";
+    }
+
+    for(int i = 1; i < smt_subspace_num; i++){
+        right_total_proof << "(push)\n";
+        right_total_proof << "(echo \"Check right-total " << i << "\")\n";
+        right_total_proof << "(assert (and\n";
+        right_total_proof << "sat_subspace" << endl;
+        system("cat right_total.smt2 >> right_total_proof.smt2");
+        right_total_proof << "(not smt_subspace" << i << ")\n";
+        right_total_proof << ")\n)\n";
+        right_total_proof << "(check-sat)\n";
+        right_total_proof << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
+        right_total_proof << "(get-proof)\n";
+        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        right_total_proof << "(pop)\n\n";
+
+    }
+
+    right_total_proof.close();
+
+    system("rm -f soundness_proof.smt2");
+    ofstream soundness_proof = ofstream("soundness_proof.smt2", ios::app);
+
+    system("cat proof.smt2 >> soundness_proof.smt2");     
+
+    soundness_proof << "\n";
+    soundness_proof << "(push)\n";
+    soundness_proof << "(echo \"Check soundness dom\")\n";
+    soundness_proof << "(assert (and\n";
+    soundness_proof << "smt_subspace\n";
+    soundness_proof << "sat_subspace\n";
+    soundness_proof << "smt_sat_rel\n";
+    soundness_proof << "(distinct smt_dom sat_dom)\n";
+    soundness_proof << ")\n";
+    soundness_proof << ")\n";
+    soundness_proof << "(check-sat)\n";
+    soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom.out\")\n";
+    soundness_proof << "(get-proof)\n";
+    soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
+    soundness_proof << "(pop)\n\n";
 
     for(int i = 1; i < next_constraint_num; i++){
-        proof_file << "(push)\n";
-        proof_file << "(echo \"Check soundness c" << i << "\")\n";
-        proof_file << "(assert (and\n";
-        proof_file << "           smt_subspace\n";
-        proof_file << "           sat_subspace\n";
-        proof_file << "           smt_sat_rel\n";
-        proof_file << "           (distinct smt_c" << i << " sat_c" << i << ")\n";
-        proof_file << "        )\n";
-        proof_file << ")\n";
-
-        proof_file << "(check-sat)\n";
-        proof_file << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
-        proof_file << "(get-proof)\n";
-        proof_file << "(set-option :regular-output-channel \"stdout\")\n";
-        proof_file << "(pop)\n\n";
+        soundness_proof << "(push)\n";
+        soundness_proof << "(echo \"Check soundness c" << i << "\")\n";
+        soundness_proof << "(assert (and\n";
+        soundness_proof << "           smt_subspace\n";
+        soundness_proof << "           sat_subspace\n";
+        soundness_proof << "           smt_sat_rel\n";
+        soundness_proof << "           (distinct smt_c" << i << " sat_c" << i << ")\n";
+        soundness_proof << "        )\n";
+        soundness_proof << ")\n";
+        soundness_proof << "(check-sat)\n";
+        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
+        soundness_proof << "(get-proof)\n";
+        soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        soundness_proof << "(pop)\n\n";
 
     }
 
+    soundness_proof.close();
 
     system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2 *subspace.smt2");
     system("rm -f left_containing.smt2 right_containing.smt2 left_total.smt2 right_total.smt2 sat_constraints.smt2");
@@ -2302,10 +2389,12 @@ void Encoder::generate_proof2step(){
     system("rm -f connection2step.smt2 constraints2step1.smt2 constraints2step2.smt2 domains2step.smt2 smt_step1_funs.smt2");
     system("rm -f left_total_step1.smt2 smt_step1_funs.smt2 smt_subspace_step1.smt2");
 
+    system("rm proof.smt2 proof_step1.smt2");
     system("mkdir -p proofs");
     system("mkdir -p proofs_step1");
-    system("mv proof.smt2 proofs");
-    system("mv proof_step1.smt2 proofs_step1");
+    system("mv *_step1.smt2 proofs_step1");
+    system("mv *.smt2 proofs");
+    
 
     proof_file.close();
 }

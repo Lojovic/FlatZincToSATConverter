@@ -11,8 +11,13 @@ die() {
 
 # Input
 
-if [ $# -ne 1 ]; then
-    die "Usage: $0 model.fzn"
+EXPORT_PROOF=0
+
+if [ $# -eq 2 ] && [ "$1" = "-export-proof" ]; then
+    EXPORT_PROOF=1
+    shift
+elif [ $# -ne 1 ]; then
+    die "Usage: $0 [-export-proof] model.fzn"
 fi
 
 INPUT_FZN="$1"
@@ -83,24 +88,26 @@ while true; do
     STATUS=$(printf "%s\n" "$SOLVER_OUTPUT" | head -n 1)
 
     if [ "$STATUS" = "UNSAT" ]; then
-        if [ "$FIRST_RUN" -eq 1 ]; then
-            rm -rf proofs proofs_step1
+        if [ "$EXPORT_PROOF" -eq 1 ]; then
+            if [ "$FIRST_RUN" -eq 1 ]; then
+                rm -rf proofs proofs_step1
 
-            ./flatzinc_to_sat -export-proof "$WORK_FZN" >/dev/null \
-                || die "Solver failed while exporting UNSAT proof (initial)"
+                ./flatzinc_to_sat -export-proof "$WORK_FZN" >/dev/null \
+                    || die "Solver failed while exporting UNSAT proof (initial)"
 
-            [ -d proofs ] || die "Expected proofs folder not created (initial UNSAT)"
+                [ -d proofs ] || die "Expected proofs folder not created (initial UNSAT)"
 
-            rm -rf proofs_unsat
-            mv proofs proofs_unsat
+                rm -rf proofs_unsat
+                mv proofs proofs_unsat
 
-            if [ -d proofs_step1 ]; then
-                rm -rf proofs_step1_unsat
-                mv proofs_step1 proofs_step1_unsat
+                if [ -d proofs_step1 ]; then
+                    rm -rf proofs_step1_unsat
+                    mv proofs_step1 proofs_step1_unsat
+                fi
+
+                echo "UNSAT"
+                exit 0
             fi
-
-            echo "UNSAT"
-            exit 0
         fi
         break
     fi
@@ -135,21 +142,23 @@ while true; do
     mv "${WORK_FZN}.tmp" "$WORK_FZN"
 done
 
-# Export UNSAT proof 
+if [ "$EXPORT_PROOF" -eq 1 ]; then
 
-rm -rf proofs proofs_step1
+    # Export UNSAT proof 
+    rm -rf proofs proofs_step1
 
-./flatzinc_to_sat -export-proof "$WORK_FZN" >/dev/null \
-    || die "Solver failed while exporting optimality UNSAT proof"
+    ./flatzinc_to_sat -export-proof "$WORK_FZN" >/dev/null \
+        || die "Solver failed while exporting optimality UNSAT proof"
 
-[ -d proofs ] || die "Expected proofs folder not created (optimality UNSAT)"
+    [ -d proofs ] || die "Expected proofs folder not created (optimality UNSAT)"
 
-rm -rf proofs_unsat
-mv proofs proofs_unsat
+    rm -rf proofs_unsat
+    mv proofs proofs_unsat
 
-if [ -d proofs_step1 ]; then
-    rm -rf proofs_step1_unsat
-    mv proofs_step1 proofs_step1_unsat
+    if [ -d proofs_step1 ]; then
+        rm -rf proofs_step1_unsat
+        mv proofs_step1 proofs_step1_unsat
+    fi
 fi
 
 # Replace bound with equality
@@ -166,21 +175,26 @@ awk -v c="$EQ_CONSTRAINT" -v ann="$BOUND_ANN" '
 
 mv "${WORK_FZN}.tmp" "$WORK_FZN"
 
-# Export SAT proof
+if [ "$EXPORT_PROOF" -eq 1 ]; then
+    # Export SAT proof
 
-rm -rf proofs proofs_step1
+    rm -rf proofs proofs_step1
 
-FINAL_OUTPUT=$(./flatzinc_to_sat -export-proof "$WORK_FZN") \
-    || die "Solver failed while exporting SAT proof"
+    FINAL_OUTPUT=$(./flatzinc_to_sat -export-proof "$WORK_FZN") \
+        || die "Solver failed while exporting SAT proof"
 
-[ -d proofs ] || die "Expected proofs folder not created (SAT)"
+    [ -d proofs ] || die "Expected proofs folder not created (SAT)"
 
-rm -rf proofs_sat
-mv proofs proofs_sat
+    rm -rf proofs_sat
+    mv proofs proofs_sat
 
-if [ -d proofs_step1 ]; then
-    rm -rf proofs_step1_sat
-    mv proofs_step1 proofs_step1_sat
+    if [ -d proofs_step1 ]; then
+        rm -rf proofs_step1_sat
+        mv proofs_step1 proofs_step1_sat
+    fi
+else
+    FINAL_OUTPUT=$(./flatzinc_to_sat "$WORK_FZN") \
+        || die "Solver failed while exporting SAT proof"
 fi
 
 # Output

@@ -73,7 +73,11 @@ int main(int argc, char** argv) {
     }
 
     if(input_file && has_optimization_goal(input_file)){
-        string cmd = "./optimizer ";
+        string cmd;
+        if(export_proof)
+            cmd = "./optimizer -export-proof ";
+        else
+            cmd = "./optimizer ";
         cmd += input_file;
         system(cmd.c_str());
         return 0;
