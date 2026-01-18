@@ -75,6 +75,33 @@ sed -E 's/^solve[[:space:]]+.*;/solve satisfy;/' \
     "$INPUT_FZN" > "$WORK_FZN" \
     || die "Failed to rewrite solve goal"
 
+# Ensure OPT_VAR has :: output_var (temporarily)
+
+ADDED_OUTPUT_VAR=0
+
+if [ -n "$OPT_VAR" ]; then
+    if ! grep -Eq "^[[:space:]]*var[[:space:]].*:[[:space:]]*$OPT_VAR([[:space:]]*::|[[:space:]]*;).*output_var" "$WORK_FZN"; then
+        awk -v v="$OPT_VAR" '
+            BEGIN { done = 0 }
+            /^[[:space:]]*var[[:space:]].*:[[:space:]]*/ {
+                if (done == 0 &&
+                    $0 ~ (":[[:space:]]*" v "([[:space:]]*::|[[:space:]]*;)")) {
+
+                    if ($0 !~ /::[[:space:]]*output_var/) {
+                        sub(/[[:space:]]*;[[:space:]]*$/,
+                            " :: output_var;")
+                        done = 1
+                    }
+                }
+            }
+            { print }
+        ' "$WORK_FZN" > "${WORK_FZN}.tmp" \
+            || die "Failed to add :: output_var to $OPT_VAR"
+
+        mv "${WORK_FZN}.tmp" "$WORK_FZN"
+        ADDED_OUTPUT_VAR=1
+    fi
+fi
 
 # Linear search
 
@@ -143,8 +170,6 @@ while true; do
 done
 
 if [ "$EXPORT_PROOF" -eq 1 ]; then
-
-    # Export UNSAT proof 
     rm -rf proofs proofs_step1
 
     ./flatzinc_to_sat -export-proof "$WORK_FZN" >/dev/null \
@@ -175,9 +200,26 @@ awk -v c="$EQ_CONSTRAINT" -v ann="$BOUND_ANN" '
 
 mv "${WORK_FZN}.tmp" "$WORK_FZN"
 
-if [ "$EXPORT_PROOF" -eq 1 ]; then
-    # Export SAT proof
+# Remove :: output_var before final SAT 
 
+if [ "$ADDED_OUTPUT_VAR" -eq 1 ]; then
+    awk -v v="$OPT_VAR" '
+        /^[[:space:]]*var[[:space:]].*:[[:space:]]*/ {
+            if ($0 ~ (":[[:space:]]*" v "([[:space:]]*::|[[:space:]]*;)")) {
+                gsub(/[[:space:]]*::[[:space:]]*output_var/, "")
+            }
+        }
+        { print }
+    ' "$WORK_FZN" > "${WORK_FZN}.tmp" \
+        || die "Failed to remove :: output_var from $OPT_VAR"
+
+    mv "${WORK_FZN}.tmp" "$WORK_FZN"
+fi
+
+
+# Final solve / proof export
+
+if [ "$EXPORT_PROOF" -eq 1 ]; then
     rm -rf proofs proofs_step1
 
     FINAL_OUTPUT=$(./flatzinc_to_sat -export-proof "$WORK_FZN") \
