@@ -2500,7 +2500,7 @@ void Encoder::read_solver_output(const string& outputFile) {
                 id_map.erase(l->id);
 
                 if(curr_basic_var->is_output)
-                    cout << *curr_basic_var->name << " = " << c->left << '\n';
+                    cout << *curr_basic_var->name << " = " << c->left << ";\n";
             } 
         } else if(holds_alternative<IntSetVarType*>(*curr_basic_var_type)){
             IntSetVarType* c = get<IntSetVarType*>(*curr_basic_var_type);
@@ -2522,7 +2522,7 @@ void Encoder::read_solver_output(const string& outputFile) {
                 id_map.erase(l->id);
                 
                 if(curr_basic_var->is_output)
-                    cout << *curr_basic_var->name << " = " << *left << '\n';
+                    cout << *curr_basic_var->name << " = " << *left << ";\n";
             } 
         } else if(holds_alternative<SetVarType*>(*curr_basic_var_type)){
                 if(!sign)
@@ -2534,12 +2534,12 @@ void Encoder::read_solver_output(const string& outputFile) {
                 if(!sign){
                     curr_basic_var->value = new BasicExpr(new BasicLiteralExpr(true));
                     if(curr_basic_var->is_output)
-                        cout << *curr_basic_var->name << " = true\n"; 
+                        cout << *curr_basic_var->name << " = true;\n"; 
                     
                 } else {
                     curr_basic_var->value = new BasicExpr(new BasicLiteralExpr(false));
                     if(curr_basic_var->is_output)                  
-                        cout << *curr_basic_var->name << " = false\n";
+                        cout << *curr_basic_var->name << " = false;\n";
                 } 
                 id_map.erase(l->id);                    
             }
@@ -2562,7 +2562,7 @@ void Encoder::read_solver_output(const string& outputFile) {
             cout << *it << ", ";
         }
         
-        cout << *prev(set_var.second.end()) << "}\n";
+        cout << *prev(set_var.second.end()) << "};\n";
     }
 
 
