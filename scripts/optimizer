@@ -115,8 +115,11 @@ while true; do
     STATUS=$(printf "%s\n" "$SOLVER_OUTPUT" | head -n 1)
 
     if [ "$STATUS" = "UNSAT" ]; then
-        if [ "$EXPORT_PROOF" -eq 1 ]; then
-            if [ "$FIRST_RUN" -eq 1 ]; then
+    	if [ "$FIRST_RUN" -eq 1 ]; then
+
+			echo "UNSAT"
+
+	        if [ "$EXPORT_PROOF" -eq 1 ]; then
                 rm -rf proofs proofs_step1
 
                 ./flatzinc_to_sat -export-proof "$WORK_FZN" >/dev/null \
@@ -132,9 +135,9 @@ while true; do
                     mv proofs_step1 proofs_step1_unsat
                 fi
 
-                echo "UNSAT"
-                exit 0
             fi
+
+			exit 0
         fi
         break
     fi
