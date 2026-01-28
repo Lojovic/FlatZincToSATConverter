@@ -4592,7 +4592,6 @@ void Encoder::encode_int_div(const BasicVar& a, const BasicVar& b, const BasicVa
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
         constraints2step1 << "(and\n";
         constraints2step1 << "(mzn_div " << *a.name << " " << *b.name << " " << *c.name << ")\n";
-        constraints2step1 << "(ite (< " << *a.name << " 0) (<= " << *r->name << " 0) (>= " << *r->name << " 0))\n";
 
         constraints2step1 << "(not (= " << *b.name << " 0))\n)\n)\n";
 
