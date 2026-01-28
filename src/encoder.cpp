@@ -1130,6 +1130,11 @@ void Encoder::handle_set_vars(){
                                         << *var->name << ") #b1)" << endl;
                 smt_subspace << "(distinct ((_ extract " << i - bv_left << " " << i - bv_left << ") " 
                                         << *var->name << ") #b1)\n---" << endl;
+
+                if(is2step){
+                    smt_subspace_step1 << "(distinct ((_ extract " << i - bv_left << " " << i - bv_left << ") " 
+                        << *var->name << ") #b1)\n---" << endl;
+                }
             }
         }
 
@@ -9652,9 +9657,11 @@ void Encoder::encode_set_card(const BasicVar& S, const BasicVar& x, CNF& cnf_cla
             constraints2step2 << "(= " << *x.name << " " << *var1->name << ")\n)\n)\n";
         }
 
-        for(auto clause : temp_clauses)
+        for(auto clause : temp_clauses){
             sat_constraint_clauses.push_back(clause);
-
+            cnf_clauses.push_back(clause);
+        }
+        
         export_proof = true;
 
         
