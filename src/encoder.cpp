@@ -4590,10 +4590,8 @@ void Encoder::encode_int_div(const BasicVar& a, const BasicVar& b, const BasicVa
         constraint2step_set.insert(next_constraint_num);
 
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-        constraints2step1 << "(and\n";
-        constraints2step1 << "(mzn_div " << *a.name << " " << *b.name << " " << *c.name << ")\n";
+        constraints2step1 << "(mzn_div " << *a.name << " " << *b.name << " " << *c.name << ")\n)\n";
 
-        constraints2step1 << "(not (= " << *b.name << " 0))\n)\n)\n";
 
 
         connection2step << "(= " << *bc->name << " (* " << *b.name << " " << *c.name << "))\n";
@@ -7310,10 +7308,8 @@ void Encoder::encode_int_mod(const BasicVar& a, const BasicVar& b, const BasicVa
         constraint2step_set.insert(next_constraint_num);
 
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-        constraints2step1 << "(and\n";
-        constraints2step1 << "(mzn_mod " << *a.name << " " << *b.name << " " << *c.name << ")\n";
+        constraints2step1 << "(mzn_mod " << *a.name << " " << *b.name << " " << *c.name << ")\n)\n";
 
-        constraints2step1 << "(not (= " << *b.name << " 0))\n)\n)\n";
 
 
         connection2step << "(= " << *bp->name << " (* " << *b.name << " " << *p->name << "))\n";
