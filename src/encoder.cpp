@@ -8442,11 +8442,11 @@ void Encoder::encode_bool_and(const BasicVar& a, const BasicVar& b, const BasicV
     
     if(export_proof){
 
-        isLIA = true;
+        isNIA = true;
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (= 2 (+ " << *a.name <<  " " <<
-                                        *b.name << ")) 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " (* " << *a.name <<  " " <<
+                                        *b.name << ")\n)\n)\n";
     }    
     
     LiteralPtr yes_a = make_literal(LiteralType::BOOL_VARIABLE, a.id, true, 0);
@@ -9143,8 +9143,8 @@ void Encoder::encode_bool_or(const BasicVar &a, const BasicVar& b, const BasicVa
         isLIA = true;
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (>= (+ " << *a.name <<  " " <<
-                                        *b.name << ") 1) 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " (ite (> " << *a.name <<  " " <<
+                                        *b.name << ") " << *a.name << " " << *b.name << ")\n)\n)\n";
     }    
     
     LiteralPtr yes_a = make_literal(LiteralType::BOOL_VARIABLE, a.id, true, 0);
