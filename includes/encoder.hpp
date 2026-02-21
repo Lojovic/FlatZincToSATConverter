@@ -64,6 +64,12 @@ struct substitution_map_hash {
     }
 };
 
+struct pair_hash {
+    size_t operator()(const pair<string, string> &p) const noexcept {
+        return std::hash<std::string>{}(p.first) ^ (std::hash<std::string>{}(p.second) << 1);
+    }
+};
+
 
 class Encoder {
 public:
@@ -185,6 +191,13 @@ private:
     int sub_index1 = -1;
     int sub_index2 = -1;
     unordered_map<tuple<int, int, int, int>, BasicVar*, substitution_map_hash> encoded_substitutions;
+
+    vector<unordered_set<string>> sat_subspace_vars = {{}};
+    vector<unordered_set<string>> sat_constraints_vars = {{}};
+    vector<unordered_set<string>> smt_subspace_vars = {{}};
+    vector<unordered_set<string>> smt_constraints_vars;
+    vector<unordered_set<string>> smt_sat_rel_vars = {{}};
+    unordered_set<pair<string, string>, pair_hash> var_pairs;
 
     int sat_subspace_num = 1;
     int smt_subspace_num = 1;
