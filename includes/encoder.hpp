@@ -147,6 +147,7 @@ private:
     int bv_left = numeric_limits<int>::max(), bv_right = numeric_limits<int>::min();
     CNF definition_clauses;
     CNF sat_dom_clauses;
+    CNF sat_dom_clauses2step;
     CNF sat_constraint_clauses;
     void write_lit_definition_clauses_smt_subspace(LiteralPtr lit);
     void write_lit_definition_clauses_sat_subspace(LiteralPtr lit);
@@ -154,7 +155,7 @@ private:
     void write_lit_definition_clauses_fun(LiteralPtr lit, bool should_define_fun);
     void write_definition_clauses();
     void write_sat_constraint_clauses();
-    void write_sat_dom_clauses();
+    void write_sat_dom_clauses(CNF& clauses);
     vector<BasicVar *> set_vars;
     vector<pair<string, string>> set_in_pairs;
     vector<tuple<string, string, string>> set_in_reif_pairs;
@@ -197,6 +198,8 @@ private:
     vector<unordered_set<string>> smt_subspace_vars = {{}};
     vector<unordered_set<string>> smt_constraints_vars;
     vector<unordered_set<string>> smt_sat_rel_vars = {{}};
+    vector<unordered_set<string>> sat_dom_vars = {{}};
+    vector<unordered_set<string>> smt_dom_vars = {{}};
     unordered_set<pair<string, string>, pair_hash> var_pairs;
 
     int sat_subspace_num = 1;
@@ -204,6 +207,8 @@ private:
     int smt_sat_rel_num = 1;
     int smt_subspace_step1_num = 1;
     int smt_subspace_step2_num = 1;
+    int sat_dom_num = 1;
+    int smt_dom_num = 1;
 
     int next_dimacs_num = 1;
     int next_var_id = 1; 
