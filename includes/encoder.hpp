@@ -196,6 +196,8 @@ private:
     vector<unordered_set<string>> sat_subspace_vars = {{}};
     vector<unordered_set<string>> sat_constraints_vars = {{}};
     vector<unordered_set<string>> smt_subspace_vars = {{}};
+    vector<unordered_set<string>> smt_subspace_step1_vars = {{}};
+    vector<unordered_set<string>> connection2step_vars = {{}};
     vector<unordered_set<string>> smt_constraints_vars;
     vector<unordered_set<string>> smt_sat_rel_vars = {{}};
     vector<unordered_set<string>> sat_dom_vars = {{}};
