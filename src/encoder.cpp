@@ -2928,6 +2928,8 @@ void Encoder::generate_proof2step(){
 
     system("cat proof.smt2 >> right_total_proof.smt2");    
 
+    right_total.flush();
+
     for(int i = 1; i < smt_sat_rel_num; i++){
         right_total_proof << "(push)\n";
         right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
@@ -2969,7 +2971,7 @@ void Encoder::generate_proof2step(){
 
     for(int i = 1; i < smt_subspace_num; i++){
         right_total_proof << "(push)\n";
-        right_total_proof << "(echo \"Check left-total " << i << "\")\n";
+        right_total_proof << "(echo \"Check right-total " << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
         for(int j = 1; j < sat_subspace_num; j++){
@@ -3003,7 +3005,7 @@ void Encoder::generate_proof2step(){
         right_total_proof << "(not sat_subspace" << i << ")\n";
         right_total_proof << ")\n)\n";
         right_total_proof << "(check-sat)\n";
-        right_total_proof << "(set-option :regular-output-channel \"left_total_" << i << "_proof.out\")\n";
+        right_total_proof << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
         right_total_proof << "(get-proof)\n";
         right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
         right_total_proof << "(pop)\n\n";
