@@ -231,7 +231,7 @@ void Encoder::write_clauses_to_dimacs_file(CNF& cnf_clauses) {
                                           
                             trivial_encoding_domains << "(" << (l->pol ? "= " : "distinct ") << "((_ extract " 
                                                      << ind << " " << ind 
-                                                     << ") sub_" << l->id << ") #b1)\n"; 
+                                                     << ") sub_" << l->id << ") #b1)\n---\n"; 
 
 
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
@@ -384,7 +384,7 @@ void Encoder::write_clauses_to_smtlib_file(CNF& cnf_clauses) {
                                           
                             trivial_encoding_domains << "(" << (l->pol ? "= " : "distinct ") << "((_ extract " 
                                                      << ind << " " << ind 
-                                                     << ") sub_" << l->id << ") #b1)\n"; 
+                                                     << ") sub_" << l->id << ") #b1)\n---\n"; 
 
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
                             sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
@@ -1877,7 +1877,7 @@ void Encoder::generate_proof(){
 
     for(int i = 1; i < smt_subspace_num; i++){
         right_total_proof << "(push)\n";
-        right_total_proof << "(echo \"Check left-total " << i << "\")\n";
+        right_total_proof << "(echo \"Check right-total " << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
         for(int j = 1; j < sat_subspace_num; j++){
@@ -1908,10 +1908,10 @@ void Encoder::generate_proof(){
         }
         right_total_file.close();
 
-        right_total_proof << "(not sat_subspace" << i << ")\n";
+        right_total_proof << "(not smt_subspace" << i << ")\n";
         right_total_proof << ")\n)\n";
         right_total_proof << "(check-sat)\n";
-        right_total_proof << "(set-option :regular-output-channel \"left_total_" << i << "_proof.out\")\n";
+        right_total_proof << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
         right_total_proof << "(get-proof)\n";
         right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
         right_total_proof << "(pop)\n\n";
@@ -2530,6 +2530,9 @@ void Encoder::generate_proof2step(){
             proof_file << line << endl;
     }
 
+    smt_dom_vars.pop_back();
+    smt_dom_vars.insert(smt_dom_vars.end(), smt_dom_vars2step.begin(), smt_dom_vars2step.end());
+
     smt_dom_reader = ifstream("domains2step.smt2");
     if(std::filesystem::file_size("domains2step.smt2") > 0)
         proof_file << "(define-fun smt_dom" << smt_dom_num++ << " () Bool\n(and\n"; 
@@ -2770,10 +2773,12 @@ void Encoder::generate_proof2step(){
 
     system("cat proof.smt2 >> smt_containing_proof.smt2");    
 
+
     for(int i = 1; i < smt_subspace_num; i++){
         smt_containing_proof << "(push)\n";
         smt_containing_proof << "(echo \"Check SMT containing " << i << "\")\n";
         smt_containing_proof << "(assert (and\n";
+        
         for(int j = 1; j < smt_dom_num; j++){
             for(const auto& el : smt_dom_vars[j-1])
                 if(smt_subspace_vars[i-1].count(el)){
@@ -3002,7 +3007,7 @@ void Encoder::generate_proof2step(){
         }
         right_total_file.close();
 
-        right_total_proof << "(not sat_subspace" << i << ")\n";
+        right_total_proof << "(not smt_subspace" << i << ")\n";
         right_total_proof << ")\n)\n";
         right_total_proof << "(check-sat)\n";
         right_total_proof << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
@@ -3623,8 +3628,8 @@ BasicVar* Encoder::encode_int_range_helper_variable(const int left, const int ri
 
             smt_subspace_vars.back().insert(*int_range_var->name);
             smt_subspace_vars.push_back({});
-            smt_dom_vars.back().insert(*int_range_var->name);
-            smt_dom_vars.push_back({});
+            smt_dom_vars2step.back().insert(*int_range_var->name);
+            smt_dom_vars2step.push_back({});
         } else {
             trivial_encoding_domains << "(<= " << left_string << " " << *int_range_var->name << " " << right_string
                                         << ")\n";
@@ -3670,7 +3675,7 @@ BasicVar* Encoder::encode_bool_helper_variable(CNF& cnf_clauses) {
         isLIA = true;
 
         trivial_encoding_vars << "(declare-const " << *bool_var->name << " Int)\n";
-        trivial_encoding_domains << "(<= 0 " << *bool_var->name << " 1)\n";
+        trivial_encoding_domains << "(<= 0 " << *bool_var->name << " 1)\n---\n";
 
     }
 
@@ -9118,23 +9123,44 @@ void Encoder::encode_array_bool_xor(const ArrayLiteral& as, CNF& cnf_clauses){
 
     if(export_proof){
 
+        smt_constraints_vars.push_back({});
+
         isLIA = true;
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= 1 (mod (+ ";
+        if(as.empty()){
+            trivial_encoding_constraints << "false\n)\n";
+        } else {
+            trivial_encoding_constraints << "(= 1 (mod (+ ";
 
-        for(int i = 0; i < (int)as.size(); i++){
-            auto var = get_var_from_array(as, i);
-            trivial_encoding_constraints << *var->name  << " ";
+            for(int i = 0; i < (int)as.size(); i++){
+                auto var = get_var_from_array(as, i);
+                trivial_encoding_constraints << *var->name  << " ";
 
-            smt_constraints_vars.back().insert(*var->name);
+                smt_constraints_vars.back().insert(*var->name);
+            }
+
+            trivial_encoding_constraints << ") 2))\n)\n";
         }
-
-        trivial_encoding_constraints << ") 2))\n)\n";
         
     }    
 
+    if(as.empty()){
+        declare_unsat(cnf_clauses);
+        return;
+    }
+
     auto var0 = get_var_from_array(as, 0);
+    if(as.size() == 1){
+        LiteralPtr yes_var0 = make_literal(LiteralType::BOOL_VARIABLE, var0->id, true, 0);
+        cnf_clauses.push_back({yes_var0});
+
+        if(export_proof)
+            sat_constraint_clauses.push_back({yes_var0});
+
+        return;
+    }
+
     auto var1 = get_var_from_array(as, 1);
     if(as.size() == 2){
         encode_bool_xor(*var0, *var1, cnf_clauses);

@@ -202,6 +202,7 @@ private:
     vector<unordered_set<string>> smt_sat_rel_vars = {{}};
     vector<unordered_set<string>> sat_dom_vars = {{}};
     vector<unordered_set<string>> smt_dom_vars = {{}};
+    vector<unordered_set<string>> smt_dom_vars2step = {{}};
     unordered_set<pair<string, string>, pair_hash> var_pairs;
 
     int sat_subspace_num = 1;
