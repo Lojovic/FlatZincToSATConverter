@@ -226,13 +226,15 @@ void Encoder::write_clauses_to_dimacs_file(CNF& cnf_clauses) {
                         if(id_map.find(l->id) == id_map.end()){
                             int ind = l->val - bv_left;
 
-                            connection_formula << "(= x" << lit_num << "(= ((_ extract " << ind << " " << ind 
+                            connection_formula << "(= x" << lit_num << " (= ((_ extract " << ind << " " << ind 
                                                << ") sub_" << l->id << ") #b1))\n";   
                                           
                             trivial_encoding_domains << "(" << (l->pol ? "= " : "distinct ") << "((_ extract " 
                                                      << ind << " " << ind 
                                                      << ") sub_" << l->id << ") #b1)\n---\n"; 
 
+                            smt_dom_vars.back().insert("sub_" + to_string(l->id));
+                            smt_dom_vars.push_back({});
 
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
                             sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
@@ -366,14 +368,14 @@ void Encoder::write_clauses_to_smtlib_file(CNF& cnf_clauses) {
                             sat_smt_funs << "(= sub_" << l->id << " 1)\n)" << endl; 
 
                             left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";  
-                            connection_formula << "(= x" << lit_num << "(= sub_" << l->id << " 1))\n";                      
+                            connection_formula << "(= x" << lit_num << " (= sub_" << l->id << " 1))\n";                      
                         } else {
                             auto var = get<BasicVar*>(*id_map[l->id]);
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
                             sat_smt_funs << "(= " << *var->name << " 1)\n)" << endl;
 
                             left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                            connection_formula << "(= x" << lit_num << "(= " << *var->name << " 1))\n";   
+                            connection_formula << "(= x" << lit_num << " (= " << *var->name << " 1))\n";   
                         }
                     } else if(l->type == LiteralType::SET_ELEM){
                         if(id_map.find(l->id) == id_map.end()){
@@ -385,6 +387,9 @@ void Encoder::write_clauses_to_smtlib_file(CNF& cnf_clauses) {
                             trivial_encoding_domains << "(" << (l->pol ? "= " : "distinct ") << "((_ extract " 
                                                      << ind << " " << ind 
                                                      << ") sub_" << l->id << ") #b1)\n---\n"; 
+
+                            smt_dom_vars.back().insert("sub_" + to_string(l->id));
+                            smt_dom_vars.push_back({});
 
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
                             sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
@@ -1694,6 +1699,13 @@ void Encoder::generate_proof(){
             for(const auto& el : smt_constraints_vars[j-1])
                 if(smt_subspace_vars[i-1].count(el)){
                     smt_containing_proof << "smt_c" << j  << "\n";
+                    for(int k = 1; k < smt_dom_num && k <= (int)smt_dom_vars.size(); k++){
+                        for(const auto& constraint_var : smt_constraints_vars[j-1])
+                            if(smt_dom_vars[k-1].count(constraint_var)){
+                                smt_containing_proof << "smt_dom" << k << "\n";
+                                break;
+                            }
+                    }
                     break;
                 }
         }
@@ -1803,7 +1815,21 @@ void Encoder::generate_proof(){
                 if(found)
                     break;
             } 
-        }        
+        }
+
+        for(int j = 1; j < smt_dom_num && j <= (int)smt_dom_vars.size(); j++){
+            for(const auto& el1 : smt_dom_vars[j-1]){
+                bool found = false;
+                for(const auto& el2 : sat_subspace_vars[i-1])
+                    if(var_pairs.count({el2, el1})){
+                        left_total_proof << "smt_dom" << j << "\n";
+                        found = true;
+                        break;
+                    }
+                if(found)
+                    break;
+            }
+        }
 
         ifstream left_total_file("left_total.smt2");
         string line;
@@ -1836,18 +1862,25 @@ void Encoder::generate_proof(){
 
     system("cat proof.smt2 >> right_total_proof.smt2");
 
+    auto relation_uses_sat_subspace = [&](const unordered_set<string>& rel_vars, const unordered_set<string>& sat_vars){
+        for(const auto& sat_var : sat_vars){
+            if(rel_vars.count(sat_var))
+                return true;
+            for(const auto& rel_var : rel_vars)
+                if(var_pairs.count({sat_var, rel_var}))
+                    return true;
+        }
+        return false;
+    };
+
     for(int i = 1; i < smt_sat_rel_num; i++){
         right_total_proof << "(push)\n";
         right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
         for(int j = 1; j < sat_subspace_num; j++){
-            for(const auto& el : sat_subspace_vars[j-1]){
-                if(smt_sat_rel_vars[i-1].count(el)){
-                    right_total_proof << "sat_subspace" << j << "\n";
-                    break;
-                }
-            } 
+            if(relation_uses_sat_subspace(smt_sat_rel_vars[i-1], sat_subspace_vars[j-1]))
+                right_total_proof << "sat_subspace" << j << "\n";
         }        
 
         ifstream right_total_file("right_total.smt2");
@@ -1925,14 +1958,26 @@ void Encoder::generate_proof(){
 
     system("cat proof.smt2 >> soundness_proof.smt2");
 
-    for(int i = 1; i < sat_dom_num; i++){
+    auto domains_related = [&](const unordered_set<string>& smt_vars, const unordered_set<string>& sat_vars){
+        for(const auto& sat_var : sat_vars)
+            for(const auto& smt_var : smt_vars)
+                if(var_pairs.count({sat_var, smt_var}))
+                    return true;
+        return false;
+    };
+
+    for(int smt_i = 1; smt_i < smt_dom_num && smt_i <= (int)smt_dom_vars.size(); smt_i++){
+        for(int sat_i = 1; sat_i < sat_dom_num && sat_i <= (int)sat_dom_vars.size(); sat_i++){
+            if(!domains_related(smt_dom_vars[smt_i-1], sat_dom_vars[sat_i-1]))
+                continue;
+
         soundness_proof << "(push)\n";
-        soundness_proof << "(echo \"Check soundness dom" << i << "\")\n";
+        soundness_proof << "(echo \"Check soundness dom" << smt_i << "_" << sat_i << "\")\n";
         soundness_proof << "(assert (and\n";
 
         for(int j = 1; j < smt_subspace_num; j++){
             for(const auto& el : smt_subspace_vars[j-1])
-                if(smt_dom_vars[i-1].count(el)){
+                if(smt_dom_vars[smt_i-1].count(el)){
                     soundness_proof << "smt_subspace" << j << "\n";
                     break;
                 }
@@ -1940,7 +1985,7 @@ void Encoder::generate_proof(){
         
         for(int j = 1; j < sat_subspace_num; j++){
             for(const auto& el : sat_subspace_vars[j-1])
-                if(sat_dom_vars[i-1].count(el)){
+                if(sat_dom_vars[sat_i-1].count(el)){
                     soundness_proof << "sat_subspace" << j << "\n";
                     break;
                 }
@@ -1948,27 +1993,28 @@ void Encoder::generate_proof(){
         
         for(int j = 1; j < smt_sat_rel_num; j++){
             for(const auto& el : smt_sat_rel_vars[j-1]){
-                if(sat_dom_vars[i-1].count(el)){
+                if(sat_dom_vars[sat_i-1].count(el)){
                     soundness_proof << "smt_sat_rel" << j << "\n";
                     break;
                 }
 
-                if(smt_dom_vars[i-1].count(el)){
+                if(smt_dom_vars[smt_i-1].count(el)){
                     soundness_proof << "smt_sat_rel" << j << "\n";
                     break;
                 }
             }
         } 
         
-        soundness_proof << "(distinct smt_dom" << i << " sat_dom" << i << ")\n";
+        soundness_proof << "(distinct smt_dom" << smt_i << " sat_dom" << sat_i << ")\n";
         soundness_proof << ")\n";
         soundness_proof << ")\n";
         soundness_proof << "(check-sat)\n";
-        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << i <<".out\")\n";
+        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << smt_i << "_" << sat_i <<".out\")\n";
         soundness_proof << "(get-proof)\n";
         soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
         soundness_proof << "(pop)\n\n";
 
+        }
     }
 
     for(int i = 1; i < next_constraint_num; i++){
@@ -1982,7 +2028,15 @@ void Encoder::generate_proof(){
                     soundness_proof << "smt_subspace" << j << "\n";
                     break;
                 }
-        }      
+        }
+
+        for(int j = 1; j < smt_dom_num && j <= (int)smt_dom_vars.size(); j++){
+            for(const auto& el : smt_dom_vars[j-1])
+                if(smt_constraints_vars[i-1].count(el)){
+                    soundness_proof << "smt_dom" << j << "\n";
+                    break;
+                }
+        }
         
         for(int j = 1; j < sat_subspace_num; j++){
             for(const auto& el : sat_subspace_vars[j-1])
@@ -2087,15 +2141,24 @@ void Encoder::generate_proof2step(){
 
     system("cat trivial_encoding_vars.smt2 >> proof_step1.smt2");
 
-    proof_file << "\n(define-fun smt_dom_step1 () Bool\n(and\n";
+    proof_file << "\n(define-fun smt_dom_step1 () Bool\n";
     ifstream smt_dom_step1_reader = ifstream("trivial_encoding_domains.smt2");
-    string line;   
+    string line;
+    bool has_smt_dom_step1_clause = false;
     while(getline(smt_dom_step1_reader, line)){
 
-        if(line != "---")
+        if(line != "---"){
+            if(!has_smt_dom_step1_clause){
+                proof_file << "(and\n";
+                has_smt_dom_step1_clause = true;
+            }
             proof_file << line << endl;
+        }
     }
-    proof_file << ")\n)\n" << endl;
+    if(has_smt_dom_step1_clause)
+        proof_file << ")\n)\n" << endl;
+    else
+        proof_file << "true\n)\n" << endl;
 
     system("cat trivial_encoding_constraints.smt2 >> proof_step1.smt2");
     system("cat constraints2step1.smt2 >> proof_step1.smt2");
@@ -2790,6 +2853,13 @@ void Encoder::generate_proof2step(){
             for(const auto& el : smt_constraints_vars[j-1])
                 if(smt_subspace_vars[i-1].count(el)){
                     smt_containing_proof << "smt_c" << j  << "\n";
+                    for(int k = 1; k < smt_dom_num && k <= (int)smt_dom_vars.size(); k++){
+                        for(const auto& constraint_var : smt_constraints_vars[j-1])
+                            if(smt_dom_vars[k-1].count(constraint_var)){
+                                smt_containing_proof << "smt_dom" << k << "\n";
+                                break;
+                            }
+                    }
                     break;
                 }
         }
@@ -2900,7 +2970,21 @@ void Encoder::generate_proof2step(){
                 if(found)
                     break;
             } 
-        }        
+        }
+
+        for(int j = 1; j < smt_dom_num && j <= (int)smt_dom_vars.size(); j++){
+            for(const auto& el1 : smt_dom_vars[j-1]){
+                bool found = false;
+                for(const auto& el2 : sat_subspace_vars[i-1])
+                    if(var_pairs.count({el2, el1})){
+                        left_total_proof << "smt_dom" << j << "\n";
+                        found = true;
+                        break;
+                    }
+                if(found)
+                    break;
+            }
+        }
 
         ifstream left_total_file("left_total.smt2");
         string line;
@@ -2935,18 +3019,25 @@ void Encoder::generate_proof2step(){
 
     right_total.flush();
 
+    auto relation_uses_sat_subspace = [&](const unordered_set<string>& rel_vars, const unordered_set<string>& sat_vars){
+        for(const auto& sat_var : sat_vars){
+            if(rel_vars.count(sat_var))
+                return true;
+            for(const auto& rel_var : rel_vars)
+                if(var_pairs.count({sat_var, rel_var}))
+                    return true;
+        }
+        return false;
+    };
+
     for(int i = 1; i < smt_sat_rel_num; i++){
         right_total_proof << "(push)\n";
         right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
         for(int j = 1; j < sat_subspace_num; j++){
-            for(const auto& el : sat_subspace_vars[j-1]){
-                if(smt_sat_rel_vars[i-1].count(el)){
-                    right_total_proof << "sat_subspace" << j << "\n";
-                    break;
-                }
-            } 
+            if(relation_uses_sat_subspace(smt_sat_rel_vars[i-1], sat_subspace_vars[j-1]))
+                right_total_proof << "sat_subspace" << j << "\n";
         }        
 
         ifstream right_total_file("right_total.smt2");
@@ -3023,14 +3114,26 @@ void Encoder::generate_proof2step(){
 
     system("cat proof.smt2 >> soundness_proof.smt2");     
 
-    for(int i = 1; i < sat_dom_num; i++){
+    auto domains_related = [&](const unordered_set<string>& smt_vars, const unordered_set<string>& sat_vars){
+        for(const auto& sat_var : sat_vars)
+            for(const auto& smt_var : smt_vars)
+                if(var_pairs.count({sat_var, smt_var}))
+                    return true;
+        return false;
+    };
+
+    for(int smt_i = 1; smt_i < smt_dom_num && smt_i <= (int)smt_dom_vars.size(); smt_i++){
+        for(int sat_i = 1; sat_i < sat_dom_num && sat_i <= (int)sat_dom_vars.size(); sat_i++){
+            if(!domains_related(smt_dom_vars[smt_i-1], sat_dom_vars[sat_i-1]))
+                continue;
+
         soundness_proof << "(push)\n";
-        soundness_proof << "(echo \"Check soundness dom" << i << "\")\n";
+        soundness_proof << "(echo \"Check soundness dom" << smt_i << "_" << sat_i << "\")\n";
         soundness_proof << "(assert (and\n";
 
         for(int j = 1; j < smt_subspace_num; j++){
             for(const auto& el : smt_subspace_vars[j-1])
-                if(smt_dom_vars[i-1].count(el)){
+                if(smt_dom_vars[smt_i-1].count(el)){
                     soundness_proof << "smt_subspace" << j << "\n";
                     break;
                 }
@@ -3038,7 +3141,7 @@ void Encoder::generate_proof2step(){
         
         for(int j = 1; j < sat_subspace_num; j++){
             for(const auto& el : sat_subspace_vars[j-1])
-                if(sat_dom_vars[i-1].count(el)){
+                if(sat_dom_vars[sat_i-1].count(el)){
                     soundness_proof << "sat_subspace" << j << "\n";
                     break;
                 }
@@ -3046,27 +3149,28 @@ void Encoder::generate_proof2step(){
         
         for(int j = 1; j < smt_sat_rel_num; j++){
             for(const auto& el : smt_sat_rel_vars[j-1]){
-                if(sat_dom_vars[i-1].count(el)){
+                if(sat_dom_vars[sat_i-1].count(el)){
                     soundness_proof << "smt_sat_rel" << j << "\n";
                     break;
                 }
 
-                if(smt_dom_vars[i-1].count(el)){
+                if(smt_dom_vars[smt_i-1].count(el)){
                     soundness_proof << "smt_sat_rel" << j << "\n";
                     break;
                 }
             }
         } 
         
-        soundness_proof << "(distinct smt_dom" << i << " sat_dom" << i << ")\n";
+        soundness_proof << "(distinct smt_dom" << smt_i << " sat_dom" << sat_i << ")\n";
         soundness_proof << ")\n";
         soundness_proof << ")\n";
         soundness_proof << "(check-sat)\n";
-        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << i <<".out\")\n";
+        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << smt_i << "_" << sat_i <<".out\")\n";
         soundness_proof << "(get-proof)\n";
         soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
         soundness_proof << "(pop)\n\n";
 
+        }
     }
 
     for(int i = 1; i < next_constraint_num; i++){
@@ -3080,7 +3184,15 @@ void Encoder::generate_proof2step(){
                     soundness_proof << "smt_subspace" << j << "\n";
                     break;
                 }
-        }      
+        }
+
+        for(int j = 1; j < smt_dom_num && j <= (int)smt_dom_vars.size(); j++){
+            for(const auto& el : smt_dom_vars[j-1])
+                if(smt_constraints_vars[i-1].count(el)){
+                    soundness_proof << "smt_dom" << j << "\n";
+                    break;
+                }
+        }
         
         for(int j = 1; j < sat_subspace_num; j++){
             for(const auto& el : sat_subspace_vars[j-1])
@@ -5437,7 +5549,7 @@ void Encoder::encode_int_div(const BasicVar& a, const BasicVar& b, const BasicVa
         smt_step1_funs << "(define-fun f_" << *r->name << " () Int\n";
         smt_step1_funs << "(mzn_mod_f " << *a.name << " " << *b.name << ")\n)\n";
 
-        smt_subspace_step1 << "!(distinct " << *b.name << " 0)\n---\n";
+        smt_subspace_step1 << "(distinct " << *b.name << " 0)\n---\n";
 
         smt_subspace_step1_vars.back().insert({*b.name});
         smt_subspace_step1_vars.push_back({});
@@ -5486,7 +5598,7 @@ void Encoder::encode_int_div(const BasicVar& a, const BasicVar& b, const BasicVa
             if(export_proof)
                 sat_constraint_clauses.push_back({neg_r});
         }
-    } else if(a_left > 0){
+    } else if(a_left >= 0){
         if(r_right < 0){
             declare_unsat(cnf_clauses);
             return;
@@ -5498,31 +5610,31 @@ void Encoder::encode_int_div(const BasicVar& a, const BasicVar& b, const BasicVa
         }
     } else {
 
-        if(r_right > 0)
-            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1),
-                                pos_r});
-        else
-            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1)});    
+        LiteralPtr not_neg_a = make_literal(LiteralType::ORDER, a.id, false, -1);
 
         if(r_left < 0)
-            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, false, 0),
-                                   neg_r}); 
-        else
-            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, false, 0)});
+            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1),
+                                pos_r});
+        else if(r_right < 0)
+            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1)});    
+
+        if(r_right > 0)
+            cnf_clauses.push_back({not_neg_a, neg_r}); 
+        else if(r_left > 0)
+            cnf_clauses.push_back({not_neg_a});
 
         if(export_proof){
 
             if(r_left < 0)
                 sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1),
                                     pos_r});
-            else
+            else if(r_right < 0)
                 sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1)});  
 
             if(r_right > 0)
-                sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, a.id, false, 0),
-                                    neg_r});
-            else
-                sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, a.id, false, 0)});
+                sat_constraint_clauses.push_back({not_neg_a, neg_r});
+            else if(r_left > 0)
+                sat_constraint_clauses.push_back({not_neg_a});
         }
     }
                      
@@ -8250,7 +8362,7 @@ void Encoder::encode_int_mod(const BasicVar& a, const BasicVar& b, const BasicVa
         smt_step1_funs << "(define-fun f_" << *p->name << " () Int\n";
         smt_step1_funs << "(mzn_div_f " << *a.name << " " << *b.name << ")\n)\n";
 
-        smt_subspace_step1 << "!(distinct " << *b.name << " 0)\n---\n";
+        smt_subspace_step1 << "(distinct " << *b.name << " 0)\n---\n";
 
         smt_subspace_step1_vars.back().insert({*b.name});
         smt_subspace_step1_vars.push_back({});
@@ -8279,7 +8391,7 @@ void Encoder::encode_int_mod(const BasicVar& a, const BasicVar& b, const BasicVa
 
         smt_constraints_vars.push_back({*a.name, *b.name, *c.name, *c_abs->name, *b_abs->name,
                                         *bp->name, *p->name});
-        connection2step_vars.push_back({*a.name, *b.name, *c.name, *c_abs->name, *b_abs->name,
+        connection2step_vars.back().insert({*a.name, *b.name, *c.name, *c_abs->name, *b_abs->name,
                             *bp->name, *p->name});
         connection2step_vars.push_back({});
     }
@@ -8297,7 +8409,7 @@ void Encoder::encode_int_mod(const BasicVar& a, const BasicVar& b, const BasicVa
             if(export_proof)
                 sat_constraint_clauses.push_back({neg_c});
         }
-    } else if(a_left > 0){
+    } else if(a_left >= 0){
         if(c_right < 0){
             declare_unsat(cnf_clauses);
             return;
@@ -8309,31 +8421,31 @@ void Encoder::encode_int_mod(const BasicVar& a, const BasicVar& b, const BasicVa
         }
     } else {
 
-        if(c_right > 0)
-            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1),
-                                pos_c});
-        else
-            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1)});    
+        LiteralPtr not_neg_a = make_literal(LiteralType::ORDER, a.id, false, -1);
 
         if(c_left < 0)
-            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, false, 0),
-                                   neg_c}); 
-        else
-            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, false, 0)});
+            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1),
+                                pos_c});
+        else if(c_right < 0)
+            cnf_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1)});    
+
+        if(c_right > 0)
+            cnf_clauses.push_back({not_neg_a, neg_c}); 
+        else if(c_left > 0)
+            cnf_clauses.push_back({not_neg_a});
 
         if(export_proof){
 
             if(c_left < 0)
                 sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1),
                                     pos_c});
-            else
+            else if(c_right < 0)
                 sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, a.id, true, -1)});  
 
             if(c_right > 0)
-                sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, a.id, false, 0),
-                                    neg_c});
-            else
-                sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, a.id, false, 0)});
+                sat_constraint_clauses.push_back({not_neg_a, neg_c});
+            else if(c_left > 0)
+                sat_constraint_clauses.push_back({not_neg_a});
         }
     }
 
@@ -10268,27 +10380,42 @@ void Encoder::encode_array_set_element(const BasicVar& b, const ArrayLiteral& as
         smt_constraints_vars.push_back({*b.name, *c.name});
 
         isLIA = true;
-        isUF = true;
 
+        auto set_literal_to_bv = [&](const SetLiteral& set_lit){
+            vector<int> elems;
+            if(holds_alternative<SetSetLiteral*>(set_lit)){
+                elems = *get<SetSetLiteral*>(set_lit)->elems;
+            } else {
+                int left = get<SetRangeLiteral*>(set_lit)->left;
+                int right = get<SetRangeLiteral*>(set_lit)->right;
+                for(int val = left; val <= right; val++)
+                    elems.push_back(val);
+            }
 
-        string arr_name = "arr_" + to_string(next_array++);
-        trivial_encoding_vars << "(declare-fun " << arr_name << " (Int) (_ BitVec \n"; 
-
-        for(int i = 0; i < (int)as.size(); i++){
-            auto var = get_var_from_array(as, i);
-            trivial_encoding_domains << "(= " << *var->name << " (" << arr_name << " "
-                               << i+1 << "))\n";
-            right_total << "(= " << *var->name << " (" << arr_name << " "
-                               << i+1 << "))\n";
-
-            smt_constraints_vars.back().insert(*var->name);
-        }
+            string bv = "#b";
+            int j = (int)elems.size() - 1;
+            for(int val = bv_right; val >= bv_left; val--){
+                while(j >= 0 && elems[j] > val)
+                    j--;
+                bv += (j >= 0 && elems[j] == val) ? '1' : '0';
+            }
+            return bv;
+        };
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         trivial_encoding_constraints << "(and\n";
         trivial_encoding_constraints << "(<= 1 " << *b.name << " " << as.size() << ")\n";
 
-        trivial_encoding_constraints << "(= " << *c.name << " (" << arr_name << " " << *b.name << "))\n)\n)\n";
+        trivial_encoding_constraints << "(= " << *c.name << "\n";
+        for(int i = 0; i < (int)as.size(); i++)
+            trivial_encoding_constraints << "(ite (= " << *b.name << " " << i + 1 << ") "
+                                         << set_literal_to_bv(*get_set_from_array(as, i)) << "\n";
+
+        trivial_encoding_constraints << "(bvnot " << *c.name << ")" << endl;
+        for(int i = 0; i < (int)as.size() + 2; i++)
+            trivial_encoding_constraints << ")";
+
+        trivial_encoding_constraints << "\n)\n";
         
     }
 
@@ -10389,6 +10516,8 @@ void Encoder::encode_array_var_set_element(const BasicVar& b, const ArrayLiteral
 
     if(export_proof){
 
+        smt_constraints_vars.push_back({*b.name, *c.name});
+
         isLIA = true;
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
@@ -10397,6 +10526,7 @@ void Encoder::encode_array_var_set_element(const BasicVar& b, const ArrayLiteral
         trivial_encoding_constraints << "(= " << *c.name << "\n";
         for(int i = 0; i < (int)as.size(); i++){
             auto var = get_var_from_array(as, i);
+            smt_constraints_vars.back().insert(*var->name);
             trivial_encoding_constraints << "(ite (= " << *b.name << " " << i + 1 << ") " << *var->name << "\n";
         }
 
