@@ -1372,6 +1372,238 @@ void Encoder::flush_buffers(){
     }
 }
 
+int intern_var(unordered_map<string, int>& ids, const string& var) {
+    auto it = ids.find(var);
+    if(it != ids.end())
+        return it->second;
+
+    int id = (int)ids.size() + 1;
+    ids[var] = id;
+    return id;
+}
+
+IntChunks intern_chunks(
+    const vector<unordered_set<string>>& chunks,
+    unordered_map<string, int>& ids
+) {
+    IntChunks interned(chunks.size());
+
+    for(int i = 0; i < (int)chunks.size(); i++)
+        for(const auto& var : chunks[i])
+            interned[i].insert(intern_var(ids, var));
+
+    return interned;
+}
+
+IntSatToSmtIndex intern_var_pairs(
+    const unordered_set<pair<string, string>, pair_hash>& var_pairs,
+    unordered_map<string, int>& ids
+) {
+    IntSatToSmtIndex sat_to_smt;
+
+    for(const auto& [sat_var, smt_var] : var_pairs)
+        sat_to_smt[intern_var(ids, sat_var)].insert(intern_var(ids, smt_var));
+
+    return sat_to_smt;
+}
+
+InternedProofVars build_interned_proof_vars(
+    const vector<unordered_set<string>>& smt_dom,
+    const vector<unordered_set<string>>& sat_dom,
+    const vector<unordered_set<string>>& smt_subspace,
+    const vector<unordered_set<string>>& sat_subspace,
+    const vector<unordered_set<string>>& smt_constraints,
+    const vector<unordered_set<string>>& sat_constraints,
+    const vector<unordered_set<string>>& smt_sat_rel,
+    const unordered_set<pair<string, string>, pair_hash>& var_pairs
+) {
+    unordered_map<string, int> ids;
+    InternedProofVars interned;
+
+    interned.smt_dom = intern_chunks(smt_dom, ids);
+    interned.sat_dom = intern_chunks(sat_dom, ids);
+    interned.smt_subspace = intern_chunks(smt_subspace, ids);
+    interned.sat_subspace = intern_chunks(sat_subspace, ids);
+    interned.smt_constraints = intern_chunks(smt_constraints, ids);
+    interned.sat_constraints = intern_chunks(sat_constraints, ids);
+    interned.smt_sat_rel = intern_chunks(smt_sat_rel, ids);
+    interned.sat_to_smt = intern_var_pairs(var_pairs, ids);
+
+    return interned;
+}
+
+IntChunkIndex build_var_chunk_index(const IntChunks& chunks) {
+    IntChunkIndex index;
+
+    for(int i = 0; i < (int)chunks.size(); i++)
+        for(int var : chunks[i])
+            index[var].push_back(i + 1);
+
+    return index;
+}
+
+void mark_related_ids(
+    const IntSet& vars,
+    const IntChunkIndex& index,
+    vector<char>& seen
+) {
+    for(int var : vars) {
+        auto it = index.find(var);
+        if(it == index.end())
+            continue;
+
+        for(int id : it->second)
+            if(id > 0 && id < (int)seen.size())
+                seen[id] = true;
+    }
+}
+
+vector<int> collect_related_ids(
+    const IntSet& vars,
+    const IntChunkIndex& index,
+    int max_exclusive
+) {
+    vector<char> seen(max_exclusive, false);
+    mark_related_ids(vars, index, seen);
+
+    vector<int> ids;
+    for(int id = 1; id < max_exclusive; id++)
+        if(seen[id])
+            ids.push_back(id);
+
+    return ids;
+}
+
+vector<int> collect_related_ids(
+    const IntSet& vars1,
+    const IntSet& vars2,
+    const IntChunkIndex& index,
+    int max_exclusive
+) {
+    vector<char> seen(max_exclusive, false);
+    mark_related_ids(vars1, index, seen);
+    mark_related_ids(vars2, index, seen);
+
+    vector<int> ids;
+    for(int id = 1; id < max_exclusive; id++)
+        if(seen[id])
+            ids.push_back(id);
+
+    return ids;
+}
+
+vector<int> collect_related_ids(
+    const IntSet& vars,
+    const IntChunkIndex& first_index,
+    const IntChunkIndex& second_index,
+    int max_exclusive
+) {
+    vector<char> seen(max_exclusive, false);
+    mark_related_ids(vars, first_index, seen);
+    mark_related_ids(vars, second_index, seen);
+
+    vector<int> ids;
+    for(int id = 1; id < max_exclusive; id++)
+        if(seen[id])
+            ids.push_back(id);
+
+    return ids;
+}
+
+void mark_mapped_related_ids(
+    const IntSet& sat_vars,
+    const IntChunkIndex& smt_index,
+    const IntSatToSmtIndex& sat_to_smt,
+    vector<char>& seen
+) {
+    for(int sat_var : sat_vars) {
+        auto mapped_it = sat_to_smt.find(sat_var);
+        if(mapped_it == sat_to_smt.end())
+            continue;
+
+        mark_related_ids(mapped_it->second, smt_index, seen);
+    }
+}
+
+vector<int> collect_mapped_related_ids(
+    const IntSet& sat_vars,
+    const IntChunkIndex& smt_index,
+    const IntSatToSmtIndex& sat_to_smt,
+    int max_exclusive
+) {
+    vector<char> seen(max_exclusive, false);
+    mark_mapped_related_ids(sat_vars, smt_index, sat_to_smt, seen);
+
+    vector<int> ids;
+    for(int id = 1; id < max_exclusive; id++)
+        if(seen[id])
+            ids.push_back(id);
+
+    return ids;
+}
+
+IntChunkIndex build_mapped_sat_chunk_index(
+    const IntChunks& sat_chunks,
+    const IntSatToSmtIndex& sat_to_smt
+) {
+    IntChunkIndex index;
+
+    for(int i = 0; i < (int)sat_chunks.size(); i++) {
+        for(int sat_var : sat_chunks[i]) {
+            auto mapped_it = sat_to_smt.find(sat_var);
+            if(mapped_it == sat_to_smt.end())
+                continue;
+
+            for(int smt_var : mapped_it->second)
+                index[smt_var].push_back(i + 1);
+        }
+    }
+
+    return index;
+}
+
+VarLineCache build_var_line_cache(const string& path) {
+    VarLineCache cache;
+    ifstream file(path);
+    string line;
+
+    while(getline(file, line)) {
+        stringstream ss(line);
+        string token;
+
+        ss >> token; // (=
+        ss >> token; // var
+
+        const int line_id = (int)cache.lines.size();
+        cache.lines.push_back(line);
+        cache.line_ids_by_var[token].push_back(line_id);
+    }
+
+    return cache;
+}
+
+void write_cached_lines_for_vars(
+    ofstream& out,
+    const VarLineCache& cache,
+    const unordered_set<string>& vars
+) {
+    vector<int> line_ids;
+
+    for(const auto& var : vars) {
+        auto it = cache.line_ids_by_var.find(var);
+        if(it == cache.line_ids_by_var.end())
+            continue;
+
+        line_ids.insert(line_ids.end(), it->second.begin(), it->second.end());
+    }
+
+    sort(line_ids.begin(), line_ids.end());
+    line_ids.erase(unique(line_ids.begin(), line_ids.end()), line_ids.end());
+
+    for(int line_id : line_ids)
+        out << cache.lines[line_id] << "\n";
+}
+
 void Encoder::generate_proof(){
 
     if(is2step){
@@ -1679,6 +1911,26 @@ void Encoder::generate_proof(){
 
     system("cat smt_sat_funs.smt2 >> proof.smt2");
 
+    auto interned_vars = build_interned_proof_vars(
+        smt_dom_vars,
+        sat_dom_vars,
+        smt_subspace_vars,
+        sat_subspace_vars,
+        smt_constraints_vars,
+        sat_constraints_vars,
+        smt_sat_rel_vars,
+        var_pairs
+    );
+    auto smt_dom_index = build_var_chunk_index(interned_vars.smt_dom);
+    auto sat_dom_index = build_var_chunk_index(interned_vars.sat_dom);
+    auto smt_subspace_index = build_var_chunk_index(interned_vars.smt_subspace);
+    auto sat_subspace_index = build_var_chunk_index(interned_vars.sat_subspace);
+    auto smt_constraints_index = build_var_chunk_index(interned_vars.smt_constraints);
+    auto sat_constraints_index = build_var_chunk_index(interned_vars.sat_constraints);
+    auto smt_sat_rel_index = build_var_chunk_index(interned_vars.smt_sat_rel);
+    auto mapped_sat_subspace_index = build_mapped_sat_chunk_index(interned_vars.sat_subspace, interned_vars.sat_to_smt);
+    auto mapped_sat_dom_index = build_mapped_sat_chunk_index(interned_vars.sat_dom, interned_vars.sat_to_smt);
+
     system("rm -f smt_containing_proof.smt2");
     ofstream smt_containing_proof = ofstream("smt_containing_proof.smt2", ios::app);
 
@@ -1688,26 +1940,13 @@ void Encoder::generate_proof(){
         smt_containing_proof << "(push)\n";
         smt_containing_proof << "(echo \"Check SMT containing " << i << "\")\n";
         smt_containing_proof << "(assert (and\n";
-        for(int j = 1; j < smt_dom_num; j++){
-            for(const auto& el : smt_dom_vars[j-1])
-                if(smt_subspace_vars[i-1].count(el)){
-                    smt_containing_proof << "smt_dom" << j << "\n";
-                    break;
-                }
-        }
-        for(int j = 1; j < next_constraint_num; j++){
-            for(const auto& el : smt_constraints_vars[j-1])
-                if(smt_subspace_vars[i-1].count(el)){
-                    smt_containing_proof << "smt_c" << j  << "\n";
-                    for(int k = 1; k < smt_dom_num && k <= (int)smt_dom_vars.size(); k++){
-                        for(const auto& constraint_var : smt_constraints_vars[j-1])
-                            if(smt_dom_vars[k-1].count(constraint_var)){
-                                smt_containing_proof << "smt_dom" << k << "\n";
-                                break;
-                            }
-                    }
-                    break;
-                }
+        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], smt_dom_index, smt_dom_num))
+            smt_containing_proof << "smt_dom" << j << "\n";
+
+        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], smt_constraints_index, next_constraint_num)){
+            smt_containing_proof << "smt_c" << j  << "\n";
+            for(int k : collect_related_ids(interned_vars.smt_constraints[j-1], smt_dom_index, smt_dom_num))
+                smt_containing_proof << "smt_dom" << k << "\n";
         }
         smt_containing_proof << "(not smt_subspace" << i << ")))\n";
         smt_containing_proof << "(check-sat)\n";
@@ -1729,20 +1968,10 @@ void Encoder::generate_proof(){
         sat_containing_proof << "(push)\n";
         sat_containing_proof << "(echo \"Check SAT containing " << i << "\")\n";
         sat_containing_proof << "(assert (and\n";
-        for(int j = 1; j < sat_dom_num; j++){
-            for(const auto& el : sat_dom_vars[j-1])
-                if(sat_subspace_vars[i-1].count(el)){
-                    sat_containing_proof << "sat_dom" << j << "\n";
-                    break;
-                }
-        }
-        for(int j = 1; j < next_constraint_num; j++){
-            for(const auto& el : sat_constraints_vars[j-1])
-                if(sat_subspace_vars[i-1].count(el)){
-                    sat_containing_proof << "sat_c" << j << "\n";
-                    break;
-                }
-        }
+        for(int j : collect_related_ids(interned_vars.sat_subspace[i-1], sat_dom_index, sat_dom_num))
+            sat_containing_proof << "sat_dom" << j << "\n";
+        for(int j : collect_related_ids(interned_vars.sat_subspace[i-1], sat_constraints_index, next_constraint_num))
+            sat_containing_proof << "sat_c" << j << "\n";
         sat_containing_proof << "(not sat_subspace" << i << ")))\n";
         sat_containing_proof << "(check-sat)\n";
         sat_containing_proof << "(set-option :regular-output-channel \"sat_containing_proof" << i <<".out\")\n";
@@ -1759,33 +1988,17 @@ void Encoder::generate_proof(){
 
     system("cat proof.smt2 >> left_total_proof.smt2");
 
+    auto left_total_cache = build_var_line_cache("left_total.smt2");
+
     for(int i = 1; i < smt_sat_rel_num; i++){
         left_total_proof << "(push)\n";
         left_total_proof << "(echo \"Check left-total R" << i << "\")\n";
         left_total_proof << "(assert (and\n";
 
-        for(int j = 1; j < smt_subspace_num; j++){
-            for(const auto& el : smt_subspace_vars[j-1]){
-                if(smt_sat_rel_vars[i-1].count(el)){
-                    left_total_proof << "smt_subspace" << j << "\n";
-                    break;
-                }
-            } 
-        }        
+        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], smt_subspace_index, smt_subspace_num))
+            left_total_proof << "smt_subspace" << j << "\n";
 
-        ifstream left_total_file("left_total.smt2");
-        string line;
-        while(getline(left_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(smt_sat_rel_vars[i-1].count(token))
-                left_total_proof << line << "\n";
-        }
-        left_total_file.close();
+        write_cached_lines_for_vars(left_total_proof, left_total_cache, smt_sat_rel_vars[i-1]);
 
         left_total_proof << "(not smt_sat_rel" << i << ")\n";
         left_total_proof << ")\n)\n";
@@ -1803,47 +2016,13 @@ void Encoder::generate_proof(){
         left_total_proof << "(echo \"Check left-total " << i << "\")\n";
         left_total_proof << "(assert (and\n";
 
-        for(int j = 1; j < smt_subspace_num; j++){
-            for(const auto& el1 : smt_subspace_vars[j-1]){
-                bool found = false;
-                for(const auto& el2 : sat_subspace_vars[i-1])
-                    if(var_pairs.count({el2, el1})){
-                        left_total_proof << "smt_subspace" << j << "\n";
-                        found = true;
-                        break;
-                    }
-                if(found)
-                    break;
-            } 
-        }
+        for(int j : collect_mapped_related_ids(interned_vars.sat_subspace[i-1], smt_subspace_index, interned_vars.sat_to_smt, smt_subspace_num))
+            left_total_proof << "smt_subspace" << j << "\n";
 
-        for(int j = 1; j < smt_dom_num && j <= (int)smt_dom_vars.size(); j++){
-            for(const auto& el1 : smt_dom_vars[j-1]){
-                bool found = false;
-                for(const auto& el2 : sat_subspace_vars[i-1])
-                    if(var_pairs.count({el2, el1})){
-                        left_total_proof << "smt_dom" << j << "\n";
-                        found = true;
-                        break;
-                    }
-                if(found)
-                    break;
-            }
-        }
+        for(int j : collect_mapped_related_ids(interned_vars.sat_subspace[i-1], smt_dom_index, interned_vars.sat_to_smt, smt_dom_num))
+            left_total_proof << "smt_dom" << j << "\n";
 
-        ifstream left_total_file("left_total.smt2");
-        string line;
-        while(getline(left_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(sat_subspace_vars[i-1].count(token))
-                left_total_proof << line << "\n";
-        }
-        left_total_file.close();
+        write_cached_lines_for_vars(left_total_proof, left_total_cache, sat_subspace_vars[i-1]);
 
         left_total_proof << "(not sat_subspace" << i << ")\n";
         left_total_proof << ")\n)\n";
@@ -1861,41 +2040,18 @@ void Encoder::generate_proof(){
     ofstream right_total_proof = ofstream("right_total_proof.smt2", ios::app);
 
     system("cat proof.smt2 >> right_total_proof.smt2");
-
-    auto relation_uses_sat_subspace = [&](const unordered_set<string>& rel_vars, const unordered_set<string>& sat_vars){
-        for(const auto& sat_var : sat_vars){
-            if(rel_vars.count(sat_var))
-                return true;
-            for(const auto& rel_var : rel_vars)
-                if(var_pairs.count({sat_var, rel_var}))
-                    return true;
-        }
-        return false;
-    };
+    right_total.flush();
+    auto right_total_cache = build_var_line_cache("right_total.smt2");
 
     for(int i = 1; i < smt_sat_rel_num; i++){
         right_total_proof << "(push)\n";
         right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
-        for(int j = 1; j < sat_subspace_num; j++){
-            if(relation_uses_sat_subspace(smt_sat_rel_vars[i-1], sat_subspace_vars[j-1]))
-                right_total_proof << "sat_subspace" << j << "\n";
-        }        
+        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], sat_subspace_index, mapped_sat_subspace_index, sat_subspace_num))
+            right_total_proof << "sat_subspace" << j << "\n";
 
-        ifstream right_total_file("right_total.smt2");
-        string line;
-        while(getline(right_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(smt_sat_rel_vars[i-1].count(token))
-                right_total_proof << line << "\n";
-        }
-        right_total_file.close();
+        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_sat_rel_vars[i-1]);
 
         right_total_proof << "(not smt_sat_rel" << i << ")\n";
         right_total_proof << ")\n)\n";
@@ -1913,33 +2069,10 @@ void Encoder::generate_proof(){
         right_total_proof << "(echo \"Check right-total " << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
-        for(int j = 1; j < sat_subspace_num; j++){
-            for(const auto& el1 : sat_subspace_vars[j-1]){
-                bool found = false;
-                for(const auto& el2 : smt_subspace_vars[i-1])
-                    if(var_pairs.count({el1, el2})){
-                        right_total_proof << "sat_subspace" << j << "\n";
-                        found = true;
-                        break;
-                    }
-                if(found)
-                    break;
-            } 
-        }        
+        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], mapped_sat_subspace_index, sat_subspace_num))
+            right_total_proof << "sat_subspace" << j << "\n";
 
-        ifstream right_total_file("right_total.smt2");
-        string line;
-        while(getline(right_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(smt_subspace_vars[i-1].count(token))
-                right_total_proof << line << "\n";
-        }
-        right_total_file.close();
+        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_subspace_vars[i-1]);
 
         right_total_proof << "(not smt_subspace" << i << ")\n";
         right_total_proof << ")\n)\n";
@@ -1958,61 +2091,29 @@ void Encoder::generate_proof(){
 
     system("cat proof.smt2 >> soundness_proof.smt2");
 
-    auto domains_related = [&](const unordered_set<string>& smt_vars, const unordered_set<string>& sat_vars){
-        for(const auto& sat_var : sat_vars)
-            for(const auto& smt_var : smt_vars)
-                if(var_pairs.count({sat_var, smt_var}))
-                    return true;
-        return false;
-    };
-
     for(int smt_i = 1; smt_i < smt_dom_num && smt_i <= (int)smt_dom_vars.size(); smt_i++){
-        for(int sat_i = 1; sat_i < sat_dom_num && sat_i <= (int)sat_dom_vars.size(); sat_i++){
-            if(!domains_related(smt_dom_vars[smt_i-1], sat_dom_vars[sat_i-1]))
-                continue;
+        for(int sat_i : collect_related_ids(interned_vars.smt_dom[smt_i-1], mapped_sat_dom_index, sat_dom_num)){
+            soundness_proof << "(push)\n";
+            soundness_proof << "(echo \"Check soundness dom" << smt_i << "_" << sat_i << "\")\n";
+            soundness_proof << "(assert (and\n";
 
-        soundness_proof << "(push)\n";
-        soundness_proof << "(echo \"Check soundness dom" << smt_i << "_" << sat_i << "\")\n";
-        soundness_proof << "(assert (and\n";
+            for(int j : collect_related_ids(interned_vars.smt_dom[smt_i-1], smt_subspace_index, smt_subspace_num))
+                soundness_proof << "smt_subspace" << j << "\n";
 
-        for(int j = 1; j < smt_subspace_num; j++){
-            for(const auto& el : smt_subspace_vars[j-1])
-                if(smt_dom_vars[smt_i-1].count(el)){
-                    soundness_proof << "smt_subspace" << j << "\n";
-                    break;
-                }
-        }      
-        
-        for(int j = 1; j < sat_subspace_num; j++){
-            for(const auto& el : sat_subspace_vars[j-1])
-                if(sat_dom_vars[sat_i-1].count(el)){
-                    soundness_proof << "sat_subspace" << j << "\n";
-                    break;
-                }
-        }   
-        
-        for(int j = 1; j < smt_sat_rel_num; j++){
-            for(const auto& el : smt_sat_rel_vars[j-1]){
-                if(sat_dom_vars[sat_i-1].count(el)){
-                    soundness_proof << "smt_sat_rel" << j << "\n";
-                    break;
-                }
+            for(int j : collect_related_ids(interned_vars.sat_dom[sat_i-1], sat_subspace_index, sat_subspace_num))
+                soundness_proof << "sat_subspace" << j << "\n";
 
-                if(smt_dom_vars[smt_i-1].count(el)){
-                    soundness_proof << "smt_sat_rel" << j << "\n";
-                    break;
-                }
-            }
-        } 
-        
-        soundness_proof << "(distinct smt_dom" << smt_i << " sat_dom" << sat_i << ")\n";
-        soundness_proof << ")\n";
-        soundness_proof << ")\n";
-        soundness_proof << "(check-sat)\n";
-        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << smt_i << "_" << sat_i <<".out\")\n";
-        soundness_proof << "(get-proof)\n";
-        soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        soundness_proof << "(pop)\n\n";
+            for(int j : collect_related_ids(interned_vars.sat_dom[sat_i-1], interned_vars.smt_dom[smt_i-1], smt_sat_rel_index, smt_sat_rel_num))
+                soundness_proof << "smt_sat_rel" << j << "\n";
+
+            soundness_proof << "(distinct smt_dom" << smt_i << " sat_dom" << sat_i << ")\n";
+            soundness_proof << ")\n";
+            soundness_proof << ")\n";
+            soundness_proof << "(check-sat)\n";
+            soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << smt_i << "_" << sat_i <<".out\")\n";
+            soundness_proof << "(get-proof)\n";
+            soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
+            soundness_proof << "(pop)\n\n";
 
         }
     }
@@ -2022,43 +2123,17 @@ void Encoder::generate_proof(){
         soundness_proof << "(echo \"Check soundness c" << i << "\")\n";
         soundness_proof << "(assert (and\n";
 
-        for(int j = 1; j < smt_subspace_num; j++){
-            for(const auto& el : smt_subspace_vars[j-1])
-                if(smt_constraints_vars[i-1].count(el)){
-                    soundness_proof << "smt_subspace" << j << "\n";
-                    break;
-                }
-        }
+        for(int j : collect_related_ids(interned_vars.smt_constraints[i-1], smt_subspace_index, smt_subspace_num))
+            soundness_proof << "smt_subspace" << j << "\n";
 
-        for(int j = 1; j < smt_dom_num && j <= (int)smt_dom_vars.size(); j++){
-            for(const auto& el : smt_dom_vars[j-1])
-                if(smt_constraints_vars[i-1].count(el)){
-                    soundness_proof << "smt_dom" << j << "\n";
-                    break;
-                }
-        }
+        for(int j : collect_related_ids(interned_vars.smt_constraints[i-1], smt_dom_index, smt_dom_num))
+            soundness_proof << "smt_dom" << j << "\n";
         
-        for(int j = 1; j < sat_subspace_num; j++){
-            for(const auto& el : sat_subspace_vars[j-1])
-                if(sat_constraints_vars[i-1].count(el)){
-                    soundness_proof << "sat_subspace" << j << "\n";
-                    break;
-                }
-        }   
+        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], sat_subspace_index, sat_subspace_num))
+            soundness_proof << "sat_subspace" << j << "\n";
         
-        for(int j = 1; j < smt_sat_rel_num; j++){
-            for(const auto& el : smt_sat_rel_vars[j-1]){
-                if(sat_constraints_vars[i-1].count(el)){
-                    soundness_proof << "smt_sat_rel" << j << "\n";
-                    break;
-                }
-
-                if(smt_constraints_vars[i-1].count(el)){
-                    soundness_proof << "smt_sat_rel" << j << "\n";
-                    break;
-                }
-            }
-        } 
+        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
+            soundness_proof << "smt_sat_rel" << j << "\n";
         
         soundness_proof << "(distinct smt_c" << i << " sat_c" << i << ")\n";
         soundness_proof << ")\n";
@@ -2377,6 +2452,7 @@ void Encoder::generate_proof2step(){
     left_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
     left_total_proof_step1 << "(pop)\n\n";
     
+    auto left_total_step1_cache = build_var_line_cache("left_total_step1.smt2");
 
     for(int i = 1; i < smt_subspace_step2_num; i++){
         left_total_proof_step1 << "(push)\n";
@@ -2397,21 +2473,10 @@ void Encoder::generate_proof2step(){
             } 
         }        
 
-        ifstream left_total_file("left_total_step1.smt2");
-        string line;
-        while(getline(left_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(i < smt_subspace_step1_num && smt_subspace_step1_vars[i-1].count(token))
-                left_total_proof_step1 << line << "\n";
-            if(i >= smt_subspace_step1_num && connection2step_vars[i-smt_subspace_step1_num].count(token))
-                left_total_proof_step1 << line << "\n";
-        }
-        left_total_file.close();
+        if(i < smt_subspace_step1_num)
+            write_cached_lines_for_vars(left_total_proof_step1, left_total_step1_cache, smt_subspace_step1_vars[i-1]);
+        if(i >= smt_subspace_step1_num)
+            write_cached_lines_for_vars(left_total_proof_step1, left_total_step1_cache, connection2step_vars[i-smt_subspace_step1_num]);
 
         left_total_proof_step1 << "(not smt_subspace" << i << ")\n";
         left_total_proof_step1 << ")\n)\n";
@@ -2829,6 +2894,26 @@ void Encoder::generate_proof2step(){
 
     system("cat smt_sat_funs.smt2 >> proof.smt2");
 
+    auto interned_vars = build_interned_proof_vars(
+        smt_dom_vars,
+        sat_dom_vars,
+        smt_subspace_vars,
+        sat_subspace_vars,
+        smt_constraints_vars,
+        sat_constraints_vars,
+        smt_sat_rel_vars,
+        var_pairs
+    );
+    auto smt_dom_index = build_var_chunk_index(interned_vars.smt_dom);
+    auto sat_dom_index = build_var_chunk_index(interned_vars.sat_dom);
+    auto smt_subspace_index = build_var_chunk_index(interned_vars.smt_subspace);
+    auto sat_subspace_index = build_var_chunk_index(interned_vars.sat_subspace);
+    auto smt_constraints_index = build_var_chunk_index(interned_vars.smt_constraints);
+    auto sat_constraints_index = build_var_chunk_index(interned_vars.sat_constraints);
+    auto smt_sat_rel_index = build_var_chunk_index(interned_vars.smt_sat_rel);
+    auto mapped_sat_subspace_index = build_mapped_sat_chunk_index(interned_vars.sat_subspace, interned_vars.sat_to_smt);
+    auto mapped_sat_dom_index = build_mapped_sat_chunk_index(interned_vars.sat_dom, interned_vars.sat_to_smt);
+
     system("mkdir -p proofs");
 
     system("rm -f smt_containing_proof.smt2");
@@ -2842,26 +2927,13 @@ void Encoder::generate_proof2step(){
         smt_containing_proof << "(echo \"Check SMT containing " << i << "\")\n";
         smt_containing_proof << "(assert (and\n";
         
-        for(int j = 1; j < smt_dom_num; j++){
-            for(const auto& el : smt_dom_vars[j-1])
-                if(smt_subspace_vars[i-1].count(el)){
-                    smt_containing_proof << "smt_dom" << j << "\n";
-                    break;
-                }
-        }
-        for(int j = 1; j < next_constraint_num; j++){
-            for(const auto& el : smt_constraints_vars[j-1])
-                if(smt_subspace_vars[i-1].count(el)){
-                    smt_containing_proof << "smt_c" << j  << "\n";
-                    for(int k = 1; k < smt_dom_num && k <= (int)smt_dom_vars.size(); k++){
-                        for(const auto& constraint_var : smt_constraints_vars[j-1])
-                            if(smt_dom_vars[k-1].count(constraint_var)){
-                                smt_containing_proof << "smt_dom" << k << "\n";
-                                break;
-                            }
-                    }
-                    break;
-                }
+        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], smt_dom_index, smt_dom_num))
+            smt_containing_proof << "smt_dom" << j << "\n";
+
+        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], smt_constraints_index, next_constraint_num)){
+            smt_containing_proof << "smt_c" << j  << "\n";
+            for(int k : collect_related_ids(interned_vars.smt_constraints[j-1], smt_dom_index, smt_dom_num))
+                smt_containing_proof << "smt_dom" << k << "\n";
         }
         smt_containing_proof << "(not smt_subspace" << i << ")))\n";
         smt_containing_proof << "(check-sat)\n";
@@ -2884,20 +2956,10 @@ void Encoder::generate_proof2step(){
         sat_containing_proof << "(push)\n";
         sat_containing_proof << "(echo \"Check SAT containing " << i << "\")\n";
         sat_containing_proof << "(assert (and\n";
-        for(int j = 1; j < sat_dom_num; j++){
-            for(const auto& el : sat_dom_vars[j-1])
-                if(sat_subspace_vars[i-1].count(el)){
-                    sat_containing_proof << "sat_dom" << j << "\n";
-                    break;
-                }
-        }
-        for(int j = 1; j < next_constraint_num; j++){
-            for(const auto& el : sat_constraints_vars[j-1])
-                if(sat_subspace_vars[i-1].count(el)){
-                    sat_containing_proof << "sat_c" << j << "\n";
-                    break;
-                }
-        }
+        for(int j : collect_related_ids(interned_vars.sat_subspace[i-1], sat_dom_index, sat_dom_num))
+            sat_containing_proof << "sat_dom" << j << "\n";
+        for(int j : collect_related_ids(interned_vars.sat_subspace[i-1], sat_constraints_index, next_constraint_num))
+            sat_containing_proof << "sat_c" << j << "\n";
         sat_containing_proof << "(not sat_subspace" << i << ")))\n";
         sat_containing_proof << "(check-sat)\n";
         sat_containing_proof << "(set-option :regular-output-channel \"sat_containing_proof" << i <<".out\")\n";
@@ -2914,33 +2976,17 @@ void Encoder::generate_proof2step(){
 
     system("cat proof.smt2 >> left_total_proof.smt2");    
 
+    auto left_total_cache = build_var_line_cache("left_total.smt2");
+
     for(int i = 1; i < smt_sat_rel_num; i++){
         left_total_proof << "(push)\n";
         left_total_proof << "(echo \"Check left-total R" << i << "\")\n";
         left_total_proof << "(assert (and\n";
 
-        for(int j = 1; j < smt_subspace_num; j++){
-            for(const auto& el : smt_subspace_vars[j-1]){
-                if(smt_sat_rel_vars[i-1].count(el)){
-                    left_total_proof << "smt_subspace" << j << "\n";
-                    break;
-                }
-            } 
-        }        
+        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], smt_subspace_index, smt_subspace_num))
+            left_total_proof << "smt_subspace" << j << "\n";
 
-        ifstream left_total_file("left_total.smt2");
-        string line;
-        while(getline(left_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(smt_sat_rel_vars[i-1].count(token))
-                left_total_proof << line << "\n";
-        }
-        left_total_file.close();
+        write_cached_lines_for_vars(left_total_proof, left_total_cache, smt_sat_rel_vars[i-1]);
 
         left_total_proof << "(not smt_sat_rel" << i << ")\n";
         left_total_proof << ")\n)\n";
@@ -2958,47 +3004,13 @@ void Encoder::generate_proof2step(){
         left_total_proof << "(echo \"Check left-total " << i << "\")\n";
         left_total_proof << "(assert (and\n";
 
-        for(int j = 1; j < smt_subspace_num; j++){
-            for(const auto& el1 : smt_subspace_vars[j-1]){
-                bool found = false;
-                for(const auto& el2 : sat_subspace_vars[i-1])
-                    if(var_pairs.count({el2, el1})){
-                        left_total_proof << "smt_subspace" << j << "\n";
-                        found = true;
-                        break;
-                    }
-                if(found)
-                    break;
-            } 
-        }
+        for(int j : collect_mapped_related_ids(interned_vars.sat_subspace[i-1], smt_subspace_index, interned_vars.sat_to_smt, smt_subspace_num))
+            left_total_proof << "smt_subspace" << j << "\n";
 
-        for(int j = 1; j < smt_dom_num && j <= (int)smt_dom_vars.size(); j++){
-            for(const auto& el1 : smt_dom_vars[j-1]){
-                bool found = false;
-                for(const auto& el2 : sat_subspace_vars[i-1])
-                    if(var_pairs.count({el2, el1})){
-                        left_total_proof << "smt_dom" << j << "\n";
-                        found = true;
-                        break;
-                    }
-                if(found)
-                    break;
-            }
-        }
+        for(int j : collect_mapped_related_ids(interned_vars.sat_subspace[i-1], smt_dom_index, interned_vars.sat_to_smt, smt_dom_num))
+            left_total_proof << "smt_dom" << j << "\n";
 
-        ifstream left_total_file("left_total.smt2");
-        string line;
-        while(getline(left_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(sat_subspace_vars[i-1].count(token))
-                left_total_proof << line << "\n";
-        }
-        left_total_file.close();
+        write_cached_lines_for_vars(left_total_proof, left_total_cache, sat_subspace_vars[i-1]);
 
         left_total_proof << "(not sat_subspace" << i << ")\n";
         left_total_proof << ")\n)\n";
@@ -3018,41 +3030,17 @@ void Encoder::generate_proof2step(){
     system("cat proof.smt2 >> right_total_proof.smt2");    
 
     right_total.flush();
-
-    auto relation_uses_sat_subspace = [&](const unordered_set<string>& rel_vars, const unordered_set<string>& sat_vars){
-        for(const auto& sat_var : sat_vars){
-            if(rel_vars.count(sat_var))
-                return true;
-            for(const auto& rel_var : rel_vars)
-                if(var_pairs.count({sat_var, rel_var}))
-                    return true;
-        }
-        return false;
-    };
+    auto right_total_cache = build_var_line_cache("right_total.smt2");
 
     for(int i = 1; i < smt_sat_rel_num; i++){
         right_total_proof << "(push)\n";
         right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
-        for(int j = 1; j < sat_subspace_num; j++){
-            if(relation_uses_sat_subspace(smt_sat_rel_vars[i-1], sat_subspace_vars[j-1]))
-                right_total_proof << "sat_subspace" << j << "\n";
-        }        
+        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], sat_subspace_index, mapped_sat_subspace_index, sat_subspace_num))
+            right_total_proof << "sat_subspace" << j << "\n";
 
-        ifstream right_total_file("right_total.smt2");
-        string line;
-        while(getline(right_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(smt_sat_rel_vars[i-1].count(token))
-                right_total_proof << line << "\n";
-        }
-        right_total_file.close();
+        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_sat_rel_vars[i-1]);
 
         right_total_proof << "(not smt_sat_rel" << i << ")\n";
         right_total_proof << ")\n)\n";
@@ -3070,33 +3058,10 @@ void Encoder::generate_proof2step(){
         right_total_proof << "(echo \"Check right-total " << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
-        for(int j = 1; j < sat_subspace_num; j++){
-            for(const auto& el1 : sat_subspace_vars[j-1]){
-                bool found = false;
-                for(const auto& el2 : smt_subspace_vars[i-1])
-                    if(var_pairs.count({el1, el2})){
-                        right_total_proof << "sat_subspace" << j << "\n";
-                        found = true;
-                        break;
-                    }
-                if(found)
-                    break;
-            } 
-        }        
+        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], mapped_sat_subspace_index, sat_subspace_num))
+            right_total_proof << "sat_subspace" << j << "\n";
 
-        ifstream right_total_file("right_total.smt2");
-        string line;
-        while(getline(right_total_file, line)){
-            stringstream ss(line);
-            string token;
-
-            ss >> token; // (=
-            ss >> token; // var
-
-            if(smt_subspace_vars[i-1].count(token))
-                right_total_proof << line << "\n";
-        }
-        right_total_file.close();
+        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_subspace_vars[i-1]);
 
         right_total_proof << "(not smt_subspace" << i << ")\n";
         right_total_proof << ")\n)\n";
@@ -3114,61 +3079,29 @@ void Encoder::generate_proof2step(){
 
     system("cat proof.smt2 >> soundness_proof.smt2");     
 
-    auto domains_related = [&](const unordered_set<string>& smt_vars, const unordered_set<string>& sat_vars){
-        for(const auto& sat_var : sat_vars)
-            for(const auto& smt_var : smt_vars)
-                if(var_pairs.count({sat_var, smt_var}))
-                    return true;
-        return false;
-    };
-
     for(int smt_i = 1; smt_i < smt_dom_num && smt_i <= (int)smt_dom_vars.size(); smt_i++){
-        for(int sat_i = 1; sat_i < sat_dom_num && sat_i <= (int)sat_dom_vars.size(); sat_i++){
-            if(!domains_related(smt_dom_vars[smt_i-1], sat_dom_vars[sat_i-1]))
-                continue;
+        for(int sat_i : collect_related_ids(interned_vars.smt_dom[smt_i-1], mapped_sat_dom_index, sat_dom_num)){
+            soundness_proof << "(push)\n";
+            soundness_proof << "(echo \"Check soundness dom" << smt_i << "_" << sat_i << "\")\n";
+            soundness_proof << "(assert (and\n";
 
-        soundness_proof << "(push)\n";
-        soundness_proof << "(echo \"Check soundness dom" << smt_i << "_" << sat_i << "\")\n";
-        soundness_proof << "(assert (and\n";
+            for(int j : collect_related_ids(interned_vars.smt_dom[smt_i-1], smt_subspace_index, smt_subspace_num))
+                soundness_proof << "smt_subspace" << j << "\n";
 
-        for(int j = 1; j < smt_subspace_num; j++){
-            for(const auto& el : smt_subspace_vars[j-1])
-                if(smt_dom_vars[smt_i-1].count(el)){
-                    soundness_proof << "smt_subspace" << j << "\n";
-                    break;
-                }
-        }      
-        
-        for(int j = 1; j < sat_subspace_num; j++){
-            for(const auto& el : sat_subspace_vars[j-1])
-                if(sat_dom_vars[sat_i-1].count(el)){
-                    soundness_proof << "sat_subspace" << j << "\n";
-                    break;
-                }
-        }   
-        
-        for(int j = 1; j < smt_sat_rel_num; j++){
-            for(const auto& el : smt_sat_rel_vars[j-1]){
-                if(sat_dom_vars[sat_i-1].count(el)){
-                    soundness_proof << "smt_sat_rel" << j << "\n";
-                    break;
-                }
+            for(int j : collect_related_ids(interned_vars.sat_dom[sat_i-1], sat_subspace_index, sat_subspace_num))
+                soundness_proof << "sat_subspace" << j << "\n";
 
-                if(smt_dom_vars[smt_i-1].count(el)){
-                    soundness_proof << "smt_sat_rel" << j << "\n";
-                    break;
-                }
-            }
-        } 
-        
-        soundness_proof << "(distinct smt_dom" << smt_i << " sat_dom" << sat_i << ")\n";
-        soundness_proof << ")\n";
-        soundness_proof << ")\n";
-        soundness_proof << "(check-sat)\n";
-        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << smt_i << "_" << sat_i <<".out\")\n";
-        soundness_proof << "(get-proof)\n";
-        soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        soundness_proof << "(pop)\n\n";
+            for(int j : collect_related_ids(interned_vars.sat_dom[sat_i-1], interned_vars.smt_dom[smt_i-1], smt_sat_rel_index, smt_sat_rel_num))
+                soundness_proof << "smt_sat_rel" << j << "\n";
+
+            soundness_proof << "(distinct smt_dom" << smt_i << " sat_dom" << sat_i << ")\n";
+            soundness_proof << ")\n";
+            soundness_proof << ")\n";
+            soundness_proof << "(check-sat)\n";
+            soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << smt_i << "_" << sat_i <<".out\")\n";
+            soundness_proof << "(get-proof)\n";
+            soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
+            soundness_proof << "(pop)\n\n";
 
         }
     }
@@ -3178,43 +3111,17 @@ void Encoder::generate_proof2step(){
         soundness_proof << "(echo \"Check soundness c" << i << "\")\n";
         soundness_proof << "(assert (and\n";
 
-        for(int j = 1; j < smt_subspace_num; j++){
-            for(const auto& el : smt_subspace_vars[j-1])
-                if(smt_constraints_vars[i-1].count(el)){
-                    soundness_proof << "smt_subspace" << j << "\n";
-                    break;
-                }
-        }
+        for(int j : collect_related_ids(interned_vars.smt_constraints[i-1], smt_subspace_index, smt_subspace_num))
+            soundness_proof << "smt_subspace" << j << "\n";
 
-        for(int j = 1; j < smt_dom_num && j <= (int)smt_dom_vars.size(); j++){
-            for(const auto& el : smt_dom_vars[j-1])
-                if(smt_constraints_vars[i-1].count(el)){
-                    soundness_proof << "smt_dom" << j << "\n";
-                    break;
-                }
-        }
+        for(int j : collect_related_ids(interned_vars.smt_constraints[i-1], smt_dom_index, smt_dom_num))
+            soundness_proof << "smt_dom" << j << "\n";
         
-        for(int j = 1; j < sat_subspace_num; j++){
-            for(const auto& el : sat_subspace_vars[j-1])
-                if(sat_constraints_vars[i-1].count(el)){
-                    soundness_proof << "sat_subspace" << j << "\n";
-                    break;
-                }
-        }   
+        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], sat_subspace_index, sat_subspace_num))
+            soundness_proof << "sat_subspace" << j << "\n";
         
-        for(int j = 1; j < smt_sat_rel_num; j++){
-            for(const auto& el : smt_sat_rel_vars[j-1]){
-                if(sat_constraints_vars[i-1].count(el)){
-                    soundness_proof << "smt_sat_rel" << j << "\n";
-                    break;
-                }
-
-                if(smt_constraints_vars[i-1].count(el)){
-                    soundness_proof << "smt_sat_rel" << j << "\n";
-                    break;
-                }
-            }
-        } 
+        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
+            soundness_proof << "smt_sat_rel" << j << "\n";
         
         soundness_proof << "(distinct smt_c" << i << " sat_c" << i << ")\n";
         soundness_proof << ")\n";

@@ -70,6 +70,26 @@ struct pair_hash {
     }
 };
 
+using IntSet = unordered_set<int>;
+using IntChunks = vector<IntSet>;
+using IntChunkIndex = unordered_map<int, vector<int>>;
+using IntSatToSmtIndex = unordered_map<int, IntSet>;
+
+struct VarLineCache {
+    vector<string> lines;
+    unordered_map<string, vector<int>> line_ids_by_var;
+};
+
+struct InternedProofVars {
+    IntChunks smt_dom;
+    IntChunks sat_dom;
+    IntChunks smt_subspace;
+    IntChunks sat_subspace;
+    IntChunks smt_constraints;
+    IntChunks sat_constraints;
+    IntChunks smt_sat_rel;
+    IntSatToSmtIndex sat_to_smt;
+};
 
 class Encoder {
 public:
@@ -350,4 +370,3 @@ private:
 };
 
 #endif
-

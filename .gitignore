@@ -3,3 +3,4 @@ build
 input1.fzn
 formula.cnf
 model.out
+scripts/run-proof-export-benchmarks.sh
