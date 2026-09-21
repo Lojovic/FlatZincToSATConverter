@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
 
 
     FileType file_type = DIMACS;
-    SolverType solver_type = MINISAT;
+    SolverType solver_type = CADICAL;
     const char* input_file = nullptr;
     bool export_proof;
 

@@ -1604,6 +1604,36 @@ void write_cached_lines_for_vars(
         out << cache.lines[line_id] << "\n";
 }
 
+void write_proof_bodies(
+    const string& prelude_file,
+    const vector<pair<string, string>>& proof_files,
+    const string& prelude_output_file
+) {
+    if(!std::filesystem::exists(prelude_file))
+        return;
+
+    const auto prelude_size = std::filesystem::file_size(prelude_file);
+
+    ifstream prelude(prelude_file, ios::binary);
+    ofstream prelude_out(prelude_output_file, ios::binary);
+    prelude_out << prelude.rdbuf();
+    prelude_out.close();
+    prelude.close();
+
+    for(const auto& [proof_file, body_file] : proof_files){
+        if(!std::filesystem::exists(proof_file))
+            continue;
+
+        ifstream in(proof_file, ios::binary);
+        ofstream out(body_file, ios::binary);
+        in.seekg(prelude_size);
+        out << in.rdbuf();
+        out.close();
+        in.close();
+        std::filesystem::remove(proof_file);
+    }
+}
+
 void Encoder::generate_proof(){
 
     if(is2step){
@@ -1931,6 +1961,8 @@ void Encoder::generate_proof(){
     auto mapped_sat_subspace_index = build_mapped_sat_chunk_index(interned_vars.sat_subspace, interned_vars.sat_to_smt);
     auto mapped_sat_dom_index = build_mapped_sat_chunk_index(interned_vars.sat_dom, interned_vars.sat_to_smt);
 
+    proof_file.flush();
+
     system("rm -f smt_containing_proof.smt2");
     ofstream smt_containing_proof = ofstream("smt_containing_proof.smt2", ios::app);
 
@@ -2147,6 +2179,19 @@ void Encoder::generate_proof(){
     }
 
     soundness_proof.close();
+    proof_file.close();
+
+    write_proof_bodies(
+        "proof.smt2",
+        {
+            {"smt_containing_proof.smt2", "smt_containing_body.smt2"},
+            {"sat_containing_proof.smt2", "sat_containing_body.smt2"},
+            {"left_total_proof.smt2", "left_total_body.smt2"},
+            {"right_total_proof.smt2", "right_total_body.smt2"},
+            {"soundness_proof.smt2", "soundness_body.smt2"}
+        },
+        "prelude.smt2"
+    );
 
 
     system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2 *subspace.smt2");
@@ -2158,8 +2203,6 @@ void Encoder::generate_proof(){
     system("rm proof.smt2");
     system("mkdir -p proofs");
     system("mv *.smt2 proofs");
-
-    proof_file.close();
 }
 
 void Encoder::generate_proof2step(){
@@ -2368,6 +2411,16 @@ void Encoder::generate_proof2step(){
     
     system("cat smt_step1_funs.smt2 >> proof_step1.smt2");
 
+    proof_file.flush();
+
+    unordered_map<string, int> step1_var_ids;
+    IntChunks step1_smt_subspace_vars = intern_chunks(smt_subspace_step1_vars, step1_var_ids);
+    IntChunks step1_connection_vars = intern_chunks(connection2step_vars, step1_var_ids);
+    IntChunks step1_smt_constraints_vars = intern_chunks(smt_constraints_vars, step1_var_ids);
+    auto step1_smt_subspace_index = build_var_chunk_index(step1_smt_subspace_vars);
+    auto step1_connection_index = build_var_chunk_index(step1_connection_vars);
+    auto step1_smt_constraints_index = build_var_chunk_index(step1_smt_constraints_vars);
+
     system("mkdir -p proofs_step1");
 
     system("rm -f smt_containing_step1_proof_step1.smt2");
@@ -2380,15 +2433,11 @@ void Encoder::generate_proof2step(){
         smt_containing_step1_proof_step1 << "(echo \"Check SMT step 1 containing " << i << "\")\n";
         smt_containing_step1_proof_step1 << "(assert (and\n smt_dom_step1\n";
 
-        for(int j = 1; j < next_constraint_num; j++){
-            for(const auto& el : smt_constraints_vars[j-1])
-                if(smt_subspace_step1_vars[i-1].count(el)){
-                    if(constraint2step_set.find(j) != constraint2step_set.end())
-                        smt_containing_step1_proof_step1 << "smt_c" << j << "_step1 \n";
-                    else
-                        smt_containing_step1_proof_step1 << "smt_c" << j << "\n";
-                    break;
-                }
+        for(int j : collect_related_ids(step1_smt_subspace_vars[i-1], step1_smt_constraints_index, next_constraint_num)){
+            if(constraint2step_set.find(j) != constraint2step_set.end())
+                smt_containing_step1_proof_step1 << "smt_c" << j << "_step1 \n";
+            else
+                smt_containing_step1_proof_step1 << "smt_c" << j << "\n";
         }
 
         smt_containing_step1_proof_step1 << "(not smt_subspace_step1_" << i << ")))\n";
@@ -2413,18 +2462,12 @@ void Encoder::generate_proof2step(){
         smt_containing_step2_proof_step1 << "(echo \"Check SMT step 2 containing " << i << "\")\n";
         smt_containing_step2_proof_step1 << "(assert (and\nsmt_dom\n";
 
-        for(int j = 1; j < next_constraint_num; j++){
-            for(const auto& el : smt_constraints_vars[j-1]){
-                if(i < smt_subspace_step1_num && smt_subspace_step1_vars[i-1].count(el)){
-                    smt_containing_step2_proof_step1 << "smt_c" << j << "\n";
-                    break;
-                }
-                if(i >= smt_subspace_step1_num && connection2step_vars[i - smt_subspace_step1_num].count(el)){
-                    smt_containing_step2_proof_step1 << "smt_c" << j << "\n";
-                    break;
-                }
-            }
-        }
+        const IntSet& query_vars = (i < smt_subspace_step1_num)
+            ? step1_smt_subspace_vars[i-1]
+            : step1_connection_vars[i - smt_subspace_step1_num];
+        for(int j : collect_related_ids(query_vars, step1_smt_constraints_index, next_constraint_num))
+            smt_containing_step2_proof_step1 << "smt_c" << j << "\n";
+
         smt_containing_step2_proof_step1 << "(not smt_subspace" << i << ")))\n";
         smt_containing_step2_proof_step1 << "(check-sat)\n";
         smt_containing_step2_proof_step1 << "(set-option :regular-output-channel \"smt_containing_step2_proof" << i <<".out\")\n";
@@ -2433,6 +2476,7 @@ void Encoder::generate_proof2step(){
         smt_containing_step2_proof_step1 << "(pop)\n\n";
 
     }
+    smt_containing_step2_proof_step1.close();
 
     system("rm -f left_total_proof_step1.smt2");
     ofstream left_total_proof_step1 = ofstream("left_total_proof_step1.smt2", ios::app);
@@ -2460,18 +2504,11 @@ void Encoder::generate_proof2step(){
         left_total_proof_step1 << "(assert (and\n";
 
 
-        for(int j = 1; j < smt_subspace_step1_num; j++){
-            for(const auto& el : smt_subspace_step1_vars[j-1]){
-                if(i < smt_subspace_step1_num && smt_subspace_step1_vars[i-1].count(el)){
-                    left_total_proof_step1 << "smt_subspace_step1_" << j << "\n";
-                    break;
-                }
-                if(i >= smt_subspace_step1_num && connection2step_vars[i-smt_subspace_step1_num].count(el)){
-                    left_total_proof_step1 << "smt_subspace_step1_" << j << "\n";
-                    break;
-                }
-            } 
-        }        
+        const IntSet& query_vars = (i < smt_subspace_step1_num)
+            ? step1_smt_subspace_vars[i-1]
+            : step1_connection_vars[i-smt_subspace_step1_num];
+        for(int j : collect_related_ids(query_vars, step1_smt_subspace_index, smt_subspace_step1_num))
+            left_total_proof_step1 << "smt_subspace_step1_" << j << "\n";
 
         if(i < smt_subspace_step1_num)
             write_cached_lines_for_vars(left_total_proof_step1, left_total_step1_cache, smt_subspace_step1_vars[i-1]);
@@ -2512,23 +2549,10 @@ void Encoder::generate_proof2step(){
         right_total_proof_step1 << "(echo \"Check right-total " << i << "\")\n";
         right_total_proof_step1 << "(assert (and\n";
 
-        for(int j = 1; j < smt_subspace_step2_num; j++){
-            if(j < smt_subspace_step1_num){
-                for(const auto& el : smt_subspace_step1_vars[j-1]){
-                    if(smt_subspace_step1_vars[i-1].count(el)){
-                        right_total_proof_step1 << "smt_subspace" << j << "\n";
-                        break;
-                    }
-                } 
-            } else {
-                for(const auto& el : connection2step_vars[j - smt_subspace_step1_num]){
-                    if(smt_subspace_step1_vars[i-1].count(el)){
-                        right_total_proof_step1 << "smt_subspace" << j << "\n";
-                        break;
-                    }
-                }
-            }
-        }        
+        for(int j : collect_related_ids(step1_smt_subspace_vars[i-1], step1_smt_subspace_index, smt_subspace_step1_num))
+            right_total_proof_step1 << "smt_subspace" << j << "\n";
+        for(int j : collect_related_ids(step1_smt_subspace_vars[i-1], step1_connection_index, (int)step1_connection_vars.size() + 1))
+            right_total_proof_step1 << "smt_subspace" << j + smt_subspace_step1_num - 1 << "\n";
 
         right_total_proof_step1 << "(not smt_subspace_step1_" << i << ")\n";
         right_total_proof_step1 << ")\n)\n";
@@ -2569,21 +2593,11 @@ void Encoder::generate_proof2step(){
             soundness_proof_step1 << "(assert (and\n";
 
 
-            for(int j = 1; j < smt_subspace_step1_num; j++){
-                for(const auto& el : smt_subspace_step1_vars[j-1])
-                    if(smt_constraints_vars[i-1].count(el)){
-                        soundness_proof_step1 << "smt_subspace_step1_" << j << "\n";
-                        break;
-                    }
-            }      
+            for(int j : collect_related_ids(step1_smt_constraints_vars[i-1], step1_smt_subspace_index, smt_subspace_step1_num))
+                soundness_proof_step1 << "smt_subspace_step1_" << j << "\n";
             
-            for(int j = 1; j <= smt_subspace_step2_num - smt_subspace_step1_num; j++){
-                for(const auto& el : connection2step_vars[j-1])
-                    if(smt_constraints_vars[i-1].count(el)){
-                        soundness_proof_step1 << "smt_subspace" << j + smt_subspace_step1_num -1 << "\n";
-                        break;
-                    }
-            }   
+            for(int j : collect_related_ids(step1_smt_constraints_vars[i-1], step1_connection_index, (int)step1_connection_vars.size() + 1))
+                soundness_proof_step1 << "smt_subspace" << j + smt_subspace_step1_num -1 << "\n";
             
             soundness_proof_step1 << "smt_step1_rel\n";
             soundness_proof_step1 << "(distinct smt_c" << i << "_step1 smt_c" << i << ")\n";
@@ -2601,6 +2615,18 @@ void Encoder::generate_proof2step(){
     soundness_proof_step1.close();
 
     proof_file.close();
+    write_proof_bodies(
+        "proof_step1.smt2",
+        {
+            {"smt_containing_step1_proof_step1.smt2", "smt_containing_step1_body_step1.smt2"},
+            {"smt_containing_step2_proof_step1.smt2", "smt_containing_step2_body_step1.smt2"},
+            {"left_total_proof_step1.smt2", "left_total_body_step1.smt2"},
+            {"right_total_proof_step1.smt2", "right_total_body_step1.smt2"},
+            {"soundness_proof_step1.smt2", "soundness_body_step1.smt2"}
+        },
+        "prelude_step1.smt2"
+    );
+
     system("rm -f proof.smt2");
     proof_file = ofstream("proof.smt2", ios::app);
 
@@ -2914,6 +2940,8 @@ void Encoder::generate_proof2step(){
     auto mapped_sat_subspace_index = build_mapped_sat_chunk_index(interned_vars.sat_subspace, interned_vars.sat_to_smt);
     auto mapped_sat_dom_index = build_mapped_sat_chunk_index(interned_vars.sat_dom, interned_vars.sat_to_smt);
 
+    proof_file.flush();
+
     system("mkdir -p proofs");
 
     system("rm -f smt_containing_proof.smt2");
@@ -3135,6 +3163,19 @@ void Encoder::generate_proof2step(){
     }
 
     soundness_proof.close();
+    proof_file.close();
+
+    write_proof_bodies(
+        "proof.smt2",
+        {
+            {"smt_containing_proof.smt2", "smt_containing_body.smt2"},
+            {"sat_containing_proof.smt2", "sat_containing_body.smt2"},
+            {"left_total_proof.smt2", "left_total_body.smt2"},
+            {"right_total_proof.smt2", "right_total_body.smt2"},
+            {"soundness_proof.smt2", "soundness_body.smt2"}
+        },
+        "prelude.smt2"
+    );
 
     system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2 *subspace.smt2");
     system("rm -f left_containing.smt2 right_containing.smt2 left_total.smt2 right_total.smt2 sat_constraints.smt2");
@@ -3147,9 +3188,6 @@ void Encoder::generate_proof2step(){
     system("mkdir -p proofs_step1");
     system("mv *_step1.smt2 proofs_step1");
     system("mv *.smt2 proofs");
-    
-
-    proof_file.close();
 }
 
 // Runs the specified solver by executing a system call.

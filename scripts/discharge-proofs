@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+    cat <<'EOF'
+Usage: discharge-proofs [--results OUT_CSV] PROOF_DIR
+
+Runs the five proof-obligation bodies in PROOF_DIR one by one by piping:
+  cat prelude body | timeout TIMEOUT_SECONDS z3 -in
+
+With --results, PROOF_DIR may also be a problem-level folder containing:
+  proof_exports/<instance>/proofs
+  proof_exports/<instance>/proofs_step1
+
+Default timeout is 1800 seconds (30 minutes). A timeout or error in one
+obligation does not stop the remaining obligations.
+
+Options:
+  --results OUT_CSV  Write a CSV containing only obligation and walltime.
+                     If Z3 reports sat for an obligation, walltime is FAILED.
+
+Environment variables:
+  TIMEOUT_SECONDS  Per-obligation timeout, in seconds. Default: 1800.
+  Z3_BIN           Z3 executable. Default: z3.
+
+Examples:
+  discharge-proofs /tmp/run/proofs
+  discharge-proofs --results /tmp/times.csv /tmp/run/proofs_step1
+  discharge-proofs --results /tmp/problem-times.csv /tmp/run/problem-folder
+EOF
+}
+
+csv_escape() {
+    local value=${1//\"/\"\"}
+    printf '"%s"' "$value"
+}
+
+format_wall_time() {
+    local seconds=$1
+    if [[ -z "$seconds" || "$seconds" == "NA" ]]; then
+        printf 'NA'
+        return
+    fi
+
+    awk -v seconds="$seconds" 'BEGIN {
+        total = int(seconds + 0.5);
+        minutes = int(total / 60);
+        secs = total % 60;
+        printf "%dm%02ds", minutes, secs;
+    }'
+}
+
+last_nonempty_line() {
+    awk 'NF {line = $0} END {
+        gsub(/\r/, "", line);
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line);
+        print line;
+    }' "$1"
+}
+
+instance_name_from_dir() {
+    local raw
+    raw=$(basename "$1")
+    printf '%s' "${raw#[0-9]*_}"
+}
+
+has_proof_prelude() {
+    [[ -f "$1/prelude.smt2" || -f "$1/prelude_step1.smt2" ]]
+}
+
+write_result_row() {
+    local recursive=$1
+    local instance=$2
+    local proof_set=$3
+    local obligation=$4
+    local wall=$5
+
+    if [[ -z "$out_csv" ]]; then
+        return
+    fi
+
+    if [[ "$recursive" == "1" ]]; then
+        csv_escape "$instance"; printf ','
+        csv_escape "$proof_set"; printf ','
+    fi
+    csv_escape "$obligation"; printf ','
+    csv_escape "$wall"; printf '\n'
+}
+
+run_proof_dir() {
+    local proof_dir=$1
+    local instance=$2
+    local proof_set=$3
+    local recursive=$4
+    local prelude
+    local obligations
+    local log_dir
+    local proof_out_dir
+
+    proof_dir=$(cd "$proof_dir" && pwd)
+    log_dir="$proof_dir/logs"
+    proof_out_dir="$proof_dir/outputs"
+
+    if [[ -f "$proof_dir/prelude.smt2" ]]; then
+        prelude="$proof_dir/prelude.smt2"
+        obligations=(
+            "smt_containing:$proof_dir/smt_containing_body.smt2"
+            "sat_containing:$proof_dir/sat_containing_body.smt2"
+            "left_total:$proof_dir/left_total_body.smt2"
+            "right_total:$proof_dir/right_total_body.smt2"
+            "soundness:$proof_dir/soundness_body.smt2"
+        )
+    elif [[ -f "$proof_dir/prelude_step1.smt2" ]]; then
+        prelude="$proof_dir/prelude_step1.smt2"
+        obligations=(
+            "smt_containing_step1:$proof_dir/smt_containing_step1_body_step1.smt2"
+            "smt_containing_step2:$proof_dir/smt_containing_step2_body_step1.smt2"
+            "left_total_step1:$proof_dir/left_total_body_step1.smt2"
+            "right_total_step1:$proof_dir/right_total_body_step1.smt2"
+            "soundness_step1:$proof_dir/soundness_body_step1.smt2"
+        )
+    else
+        echo "Expected prelude.smt2 or prelude_step1.smt2 in: $proof_dir" >&2
+        return 1
+    fi
+
+    mkdir -p "$log_dir" "$proof_out_dir"
+
+    for entry in "${obligations[@]}"; do
+        name=${entry%%:*}
+        body=${entry#*:}
+        stdout_file="$log_dir/${name}.stdout"
+        stderr_file="$log_dir/${name}.stderr"
+        time_file=$(mktemp)
+
+        if [[ ! -f "$body" ]]; then
+            echo "[$instance/$proof_set/$name] missing body: $body" >&2
+            if [[ -n "$out_csv" ]]; then
+                write_result_row "$recursive" "$instance" "$proof_set" "$name" "NA" >> "$out_csv"
+            fi
+            rm -f "$time_file"
+            continue
+        fi
+
+        if [[ "$recursive" == "1" ]]; then
+            echo "[$instance/$proof_set/$name] running"
+        else
+            echo "[$name] running"
+        fi
+
+        exit_code=0
+        /usr/bin/time -f 'TIME_RESULT,%e,%U,%S,%M' -o "$time_file" \
+            bash -o pipefail -c 'cd "$5" && cat "$1" "$2" | timeout "$3" "$4" -in' _ "$prelude" "$body" "$timeout_seconds" "$z3_bin" "$proof_out_dir" \
+            > "$stdout_file" 2> "$stderr_file" || exit_code=$?
+
+        time_result=$(awk -F',' '/^TIME_RESULT/ {print $0}' "$time_file" | tail -1)
+        wall_seconds=$(printf '%s\n' "$time_result" | awk -F',' '{print $2}')
+
+        if [[ -z "$wall_seconds" ]]; then
+            wall="NA"
+        else
+            wall=$(format_wall_time "$wall_seconds")
+        fi
+
+        if [[ -n "$out_csv" && "$(last_nonempty_line "$stdout_file")" == "sat" ]]; then
+            wall="FAILED"
+        fi
+
+        if [[ $exit_code -eq 0 ]]; then
+            status="ok"
+        elif [[ $exit_code -eq 124 ]]; then
+            status="timeout"
+        else
+            status="error($exit_code)"
+        fi
+
+        if [[ -n "$out_csv" ]]; then
+            write_result_row "$recursive" "$instance" "$proof_set" "$name" "$wall" >> "$out_csv"
+        fi
+
+        if [[ "$recursive" == "1" ]]; then
+            echo "[$instance/$proof_set/$name] $status $wall"
+        else
+            echo "[$name] $status $wall"
+        fi
+
+        if [[ -n "$out_csv" ]]; then
+            rm -f "$stdout_file"
+            find "$proof_out_dir" -maxdepth 1 -type f -name '*.out' -delete
+        fi
+        rm -f "$time_file"
+    done
+
+    echo "Logs under: $log_dir"
+    echo "Z3 proof outputs under: $proof_out_dir"
+}
+
+if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 1
+fi
+
+out_csv=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --results)
+            if [[ $# -lt 2 ]]; then
+                echo "--results requires a path" >&2
+                exit 1
+            fi
+            out_csv=$2
+            shift 2
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -ne 1 ]]; then
+    usage
+    exit 1
+fi
+
+proof_dir=$1
+timeout_seconds=${TIMEOUT_SECONDS:-1800}
+z3_bin=${Z3_BIN:-z3}
+
+if [[ ! -d "$proof_dir" ]]; then
+    echo "Proof directory does not exist: $proof_dir" >&2
+    exit 1
+fi
+
+proof_dir=$(cd "$proof_dir" && pwd)
+if [[ -n "$out_csv" ]]; then
+    out_csv=$(mkdir -p "$(dirname "$out_csv")" && cd "$(dirname "$out_csv")" && printf '%s/%s' "$(pwd)" "$(basename "$out_csv")")
+fi
+
+if ! command -v "$z3_bin" >/dev/null 2>&1; then
+    echo "Z3 executable not found: $z3_bin" >&2
+    exit 1
+fi
+
+if has_proof_prelude "$proof_dir"; then
+    if [[ -n "$out_csv" ]]; then
+        printf 'obligation,walltime\n' > "$out_csv"
+    fi
+    run_proof_dir "$proof_dir" "$(basename "$(dirname "$proof_dir")")" "$(basename "$proof_dir")" "0"
+else
+    if [[ -z "$out_csv" ]]; then
+        echo "Expected prelude.smt2 or prelude_step1.smt2 in: $proof_dir" >&2
+        exit 1
+    fi
+
+    mapfile -d '' proof_dirs < <(
+        find "$proof_dir" -type f \( -name prelude.smt2 -o -name prelude_step1.smt2 \) -printf '%h\0' | sort -z
+    )
+    if [[ ${#proof_dirs[@]} -eq 0 ]]; then
+        echo "No proof directories found under: $proof_dir" >&2
+        exit 1
+    fi
+
+    printf 'instance,proof_set,obligation,walltime\n' > "$out_csv"
+
+    for found_proof_dir in "${proof_dirs[@]}"; do
+        proof_set=$(basename "$found_proof_dir")
+        instance_dir=$(dirname "$found_proof_dir")
+        instance=$(instance_name_from_dir "$instance_dir")
+        run_proof_dir "$found_proof_dir" "$instance" "$proof_set" "1"
+    done
+fi
+
+if [[ -n "$out_csv" ]]; then
+    echo "Wrote: $out_csv"
+fi
