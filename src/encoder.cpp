@@ -1,5 +1,39 @@
 #include "../includes/encoder.hpp"
 
+int get_left(const BasicVar* var);
+int get_right(const BasicVar* var);
+
+static void write_sat_constraint_definition(ostream& out, int index, const vector<string>& lines){
+    out << "(define-fun sat_c" << index << " () Bool\n";
+    if(lines.empty()){
+        out << "true\n)\n";
+        return;
+    }
+
+    out << "(and\n";
+    for(const string& line : lines)
+        out << line << '\n';
+    out << ")\n)\n";
+}
+
+static void write_sat_constraint_definitions(ostream& out){
+    ifstream sat_constraints_file("sat_constraints.smt2");
+    vector<string> lines;
+    string line;
+    int k = 1;
+
+    while(getline(sat_constraints_file, line)){
+        if(line == "---"){
+            write_sat_constraint_definition(out, k++, lines);
+            lines.clear();
+        } else {
+            lines.push_back(line);
+        }
+    }
+
+    write_sat_constraint_definition(out, k, lines);
+}
+
 Encoder::Encoder(const vector<Item> &items, const FileType file_type, const SolverType solver_type, bool export_proof) 
 : items(items), file_type(file_type), solver_type(solver_type), export_proof(export_proof) { 
 
@@ -37,56 +71,9 @@ void Encoder::declare_unsat(CNF& cnf_clauses){
     unsat = true;
 }
 
-void Encoder::set_bv_limits(){
-    for (auto& item : items) {
-        if(holds_alternative<Constraint*>(item)){
-            auto constr = get<Constraint*>(item);
-            for(int i = 0; i < (int)constr->args->size(); i++){
-                auto arg = *(*constr->args)[i];
-                if(holds_alternative<BasicExpr*>(arg)){
-                    auto expr = *get<BasicExpr*>(arg);
-
-                    if(holds_alternative<BasicLiteralExpr*>(expr)){
-                        auto basic_literal_expr = *get<BasicLiteralExpr*>(expr);
-
-                        if(holds_alternative<SetLiteral*>(basic_literal_expr)){
-                            auto set_lit = *get<SetLiteral*>(basic_literal_expr);
-
-                            int left = numeric_limits<int>::max(), right = numeric_limits<int>::min();
-
-                            if(holds_alternative<SetRangeLiteral*>(set_lit)){
-                                auto set_range_lit = *get<SetRangeLiteral*>(set_lit);
-                                left = set_range_lit.left;
-                                right = set_range_lit.right;
-                            } else {
-                                auto set_set_lit = *get<SetSetLiteral*>(set_lit);
-                                if(set_set_lit.elems->size() > 0){
-                                    left = (*set_set_lit.elems)[0];
-                                    right = (*set_set_lit.elems)[(*set_set_lit.elems).size() - 1];
-                                }
-                            }
-
-
-                            if(left < bv_left)
-                                bv_left = left;
-
-                            if(right < bv_right)
-                                bv_right = right;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 // Passes through the list of items which constitute the problem
 // and calls the appropriate encoder function
 CNF Encoder::encode_to_cnf() {
-
-    if(export_proof)
-        set_bv_limits();
-
 
     for (auto& item : items) {
             if(unsat)
@@ -160,6 +147,80 @@ void Encoder::write_to_file(){
     }
 }
 
+bool Encoder::write_optimization_metadata(const string& var_name, const string& output_file) {
+    auto var_it = variable_map.find(var_name);
+    if (var_it == variable_map.end() || !holds_alternative<BasicVar*>(*var_it->second)) {
+        cerr << "Optimization variable not found: " << var_name << '\n';
+        return false;
+    }
+
+    BasicVar* var = get<BasicVar*>(*var_it->second);
+    int left = get_left(var);
+    int right = get_right(var);
+    vector<int> allowed_values;
+
+    if (holds_alternative<IntRangeVarType*>(*var->type)) {
+        for (int value = left; value <= right; value++)
+            allowed_values.push_back(value);
+    } else if (holds_alternative<IntSetVarType*>(*var->type)) {
+        allowed_values = *get<IntSetVarType*>(*var->type)->elems;
+    } else {
+        cerr << "Optimization variable is not an integer variable: " << var_name << '\n';
+        return false;
+    }
+
+    ofstream file(output_file);
+    if (!file.is_open()) {
+        cerr << "Cannot open optimization metadata file: " << output_file << '\n';
+        return false;
+    }
+
+    file << "var " << var_name << '\n';
+    file << "id " << var->id << '\n';
+    file << "lower " << left << '\n';
+    file << "upper " << right << '\n';
+    file << "dimacs_vars " << next_dimacs_num - 1 << '\n';
+    file << "clauses " << clause_num << '\n';
+
+    for (int value : allowed_values)
+        file << "allowed " << value << '\n';
+
+    for (int value = left; value <= right; value++) {
+        auto it = literal_to_num.find(make_tuple(LiteralType::ORDER, var->id, value));
+        if (it == literal_to_num.end()) {
+            cerr << "Missing order literal for " << var_name << " <= " << value << '\n';
+            return false;
+        }
+        file << "order " << value << ' ' << it->second << '\n';
+    }
+
+    return true;
+}
+
+static string set_elem_smt_name(const string& set_name, int elem){
+    return set_name + "__elem_" + (elem < 0 ? "m" + to_string(-elem) : to_string(elem));
+}
+
+static string set_elem_smt_name(const BasicVar& set_var, int elem){
+    return set_elem_smt_name(*set_var.name, elem);
+}
+
+static string set_elem_smt_name(const unordered_map<int, Variable*>& id_map, int id, int elem){
+    auto it = id_map.find(id);
+    if(it == id_map.end())
+        return set_elem_smt_name("sub_" + to_string(id), elem);
+
+    auto var = get<BasicVar*>(*it->second);
+    return set_elem_smt_name(*var->name, elem);
+}
+
+static void write_set_elem_literal(ostream& os, const string& elem_name, bool pol){
+    if(pol)
+        os << elem_name;
+    else
+        os << "(not " << elem_name << ")";
+}
+
 //Writes the clauses currently present to a DIMACS file and clears 
 //the cnf_clauses vector
 void Encoder::write_clauses_to_dimacs_file(CNF& cnf_clauses) {
@@ -210,48 +271,39 @@ void Encoder::write_clauses_to_dimacs_file(CNF& cnf_clauses) {
                     } else if(l->type == LiteralType::BOOL_VARIABLE){
                         if(id_map.find(l->id) == id_map.end()){
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= sub_" << l->id << " 1)\n)" << endl; 
+                            sat_smt_funs << "sub_" << l->id << "\n)" << endl; 
 
                             left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";  
-                            connection_formula << "(= x" << lit_num << " (= sub_" << l->id << " 1))\n";                      
+                            connection_formula << "(= x" << lit_num << " sub_" << l->id << ")\n";                      
                         } else {
                             auto var = get<BasicVar*>(*id_map[l->id]);
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= " << *var->name << " 1)\n)" << endl;
+                            sat_smt_funs << *var->name << "\n)" << endl;
 
                             left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                            connection_formula << "(= x" << lit_num << " (= " << *var->name << " 1))\n";   
+                            connection_formula << "(= x" << lit_num << " " << *var->name << ")\n";   
                         }
                     } else if(l->type == LiteralType::SET_ELEM){
+                        string elem_name = set_elem_smt_name(id_map, l->id, l->val);
                         if(id_map.find(l->id) == id_map.end()){
-                            int ind = l->val - bv_left;
-
-                            connection_formula << "(= x" << lit_num << " (= ((_ extract " << ind << " " << ind 
-                                               << ") sub_" << l->id << ") #b1))\n";   
+                            connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";   
                                           
-                            trivial_encoding_domains << "(" << (l->pol ? "= " : "distinct ") << "((_ extract " 
-                                                     << ind << " " << ind 
-                                                     << ") sub_" << l->id << ") #b1)\n---\n"; 
+                            write_set_elem_literal(trivial_encoding_domains, elem_name, l->pol);
+                            trivial_encoding_domains << "\n---\n"; 
 
-                            smt_dom_vars.back().insert("sub_" + to_string(l->id));
+                            smt_dom_vars.back().insert(elem_name);
                             smt_dom_vars.push_back({});
 
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
-                                               << ") sub_" << l->id << ") #b1)\n)\n";  
+                            sat_smt_funs << elem_name << "\n)\n";  
 
                             left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
                                             
                         } else {
-                            auto var = get<BasicVar*>(*id_map[l->id]);
-                            int ind = l->val - bv_left;
-
-                            connection_formula << "(= x" << lit_num << " (= ((_ extract " << ind << " " << ind 
-                                               << ") " << *var->name << ") #b1))\n";
+                            connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";
                                             
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
-                                               << ") " << *var->name << ") #b1)\n)\n";  
+                            sat_smt_funs << elem_name << "\n)\n";  
 
                             left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
                         }
@@ -365,48 +417,39 @@ void Encoder::write_clauses_to_smtlib_file(CNF& cnf_clauses) {
                     } else if(l->type == LiteralType::BOOL_VARIABLE){
                         if(id_map.find(l->id) == id_map.end()){
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= sub_" << l->id << " 1)\n)" << endl; 
+                            sat_smt_funs << "sub_" << l->id << "\n)" << endl; 
 
                             left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";  
-                            connection_formula << "(= x" << lit_num << " (= sub_" << l->id << " 1))\n";                      
+                            connection_formula << "(= x" << lit_num << " sub_" << l->id << ")\n";                      
                         } else {
                             auto var = get<BasicVar*>(*id_map[l->id]);
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= " << *var->name << " 1)\n)" << endl;
+                            sat_smt_funs << *var->name << "\n)" << endl;
 
                             left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                            connection_formula << "(= x" << lit_num << " (= " << *var->name << " 1))\n";   
+                            connection_formula << "(= x" << lit_num << " " << *var->name << ")\n";   
                         }
                     } else if(l->type == LiteralType::SET_ELEM){
+                        string elem_name = set_elem_smt_name(id_map, l->id, l->val);
                         if(id_map.find(l->id) == id_map.end()){
-                            int ind = l->val - bv_left;
-
-                            connection_formula << "(= x" << lit_num << " (= ((_ extract " << ind << " " << ind 
-                                               << ") sub_" << l->id << ") #b1))\n";   
+                            connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";   
                                           
-                            trivial_encoding_domains << "(" << (l->pol ? "= " : "distinct ") << "((_ extract " 
-                                                     << ind << " " << ind 
-                                                     << ") sub_" << l->id << ") #b1)\n---\n"; 
+                            write_set_elem_literal(trivial_encoding_domains, elem_name, l->pol);
+                            trivial_encoding_domains << "\n---\n"; 
 
-                            smt_dom_vars.back().insert("sub_" + to_string(l->id));
+                            smt_dom_vars.back().insert(elem_name);
                             smt_dom_vars.push_back({});
 
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
-                                               << ") sub_" << l->id << ") #b1)\n)\n";  
+                            sat_smt_funs << elem_name << "\n)\n";  
 
                             left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
                                             
                         } else {
-                            auto var = get<BasicVar*>(*id_map[l->id]);
-                            int ind = l->val - bv_left;
-
-                            connection_formula << "(= x" << lit_num << " (= ((_ extract " << ind << " " << ind 
-                                               << ") " << *var->name << ") #b1))\n";
+                            connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";
                                             
                             sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
-                                               << ") " << *var->name << ") #b1)\n)\n";  
+                            sat_smt_funs << elem_name << "\n)\n";  
 
                             left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
                         }
@@ -477,26 +520,17 @@ void Encoder::write_clauses_to_smtlib_file(CNF& cnf_clauses) {
 void Encoder::write_lit_definition_clauses_smt_subspace(LiteralPtr lit){
 
     if(lit->type == SET_ELEM){
-        int ind = lit->val - bv_left;
+        string elem_name = set_elem_smt_name(id_map, lit->id, lit->val);
         if(id_map.find(lit->id) != id_map.end()){
-            auto var = get<BasicVar*>(*id_map[lit->id]);
-            if(lit->pol)
-                smt_subspace << "(= ((_ extract " << ind << " " << ind 
-                                << ") " << *var->name << ") #b1)\n"; 
-            else
-                smt_subspace << "(distinct ((_ extract " << ind << " " << ind 
-                                << ") " << *var->name << ") #b1)\n"; 
+            write_set_elem_literal(smt_subspace, elem_name, lit->pol);
+            smt_subspace << "\n";
 
-            smt_subspace_vars.back().insert(*var->name);
+            smt_subspace_vars.back().insert(elem_name);
         } else {
-            if(lit->pol)
-                smt_subspace << "(= ((_ extract " << ind << " " << ind 
-                                << ") sub_" << lit->id << ") #b1)\n"; 
-            else
-                smt_subspace << "(distinct ((_ extract " << ind << " " << ind 
-                                << ") sub_" << lit->id << ") #b1)\n";  
+            write_set_elem_literal(smt_subspace, elem_name, lit->pol);
+            smt_subspace << "\n";
                                 
-            smt_subspace_vars.back().insert("sub_" + to_string(lit->id));
+            smt_subspace_vars.back().insert(elem_name);
         }        
         return;
     }
@@ -505,16 +539,16 @@ void Encoder::write_lit_definition_clauses_smt_subspace(LiteralPtr lit){
         if(id_map.find(lit->id) != id_map.end()){
             auto var = get<BasicVar*>(*id_map[lit->id]);
             if(lit->pol)
-                smt_subspace << "(= " << *var->name << " 1) ";
+                smt_subspace << *var->name << " ";
             else
-                smt_subspace << "(not (= " << *var->name << " 1)) ";
+                smt_subspace << "(not " << *var->name << ") ";
 
             smt_subspace_vars.back().insert(*var->name);
         } else {
             if(lit->pol)
-                smt_subspace << "(= sub_" << lit->id << " 1) ";
+                smt_subspace << "sub_" << lit->id << " ";
             else
-                smt_subspace << "(not (= sub_" << lit->id << " 1)) ";   
+                smt_subspace << "(not sub_" << lit->id << ") ";   
                 
             smt_subspace_vars.back().insert("sub_" + to_string(lit->id));
         }
@@ -579,16 +613,16 @@ void Encoder::write_lit_definition_clauses_smt_subspace(LiteralPtr lit){
                 if(id_map.find(l->id) != id_map.end()){
                     auto var = get<BasicVar*>(*id_map[l->id]);
                     if(l->pol)
-                        smt_subspace << "(= " << *var->name << " 1) ";
+                        smt_subspace << *var->name << " ";
                     else
-                        smt_subspace << "(not (= " << *var->name << " 1)) ";
+                        smt_subspace << "(not " << *var->name << ") ";
 
                     smt_subspace_vars.back().insert(*var->name);
                 } else {
                     if(l->pol)
-                        smt_subspace << "(= sub_" << l->id << " 1) ";
+                        smt_subspace << "sub_" << l->id << " ";
                     else
-                        smt_subspace << "(not (= sub_" << l->id << " 1)) ";   
+                        smt_subspace << "(not sub_" << l->id << ") ";   
                         
                     smt_subspace_vars.back().insert("sub_" + to_string(l->id));
                 }
@@ -611,26 +645,17 @@ void Encoder::write_lit_definition_clauses_smt_subspace(LiteralPtr lit){
                     smt_subspace_vars.back().insert("sub_" + to_string(l->id));                  
                 }                
             }else if(l->type == LiteralType::SET_ELEM){
-                int ind = l->val - bv_left;
+                string elem_name = set_elem_smt_name(id_map, l->id, l->val);
                 if(id_map.find(l->id) != id_map.end()){
-                    auto var = get<BasicVar*>(*id_map[l->id]);
-                    if(l->pol)
-                        smt_subspace << "(= ((_ extract " << ind << " " << ind 
-                                     << ") " << *var->name << ") #b1)\n"; 
-                    else
-                        smt_subspace << "(distinct ((_ extract " << ind << " " << ind 
-                                     << ") " << *var->name << ") #b1)\n"; 
+                    write_set_elem_literal(smt_subspace, elem_name, l->pol);
+                    smt_subspace << "\n";
 
-                    smt_subspace_vars.back().insert(*var->name);
+                    smt_subspace_vars.back().insert(elem_name);
                 } else {
-                    if(l->pol)
-                        smt_subspace << "(= ((_ extract " << ind << " " << ind 
-                                     << ") sub_" << l->id << ") #b1)\n"; 
-                    else
-                        smt_subspace << "(distinct ((_ extract " << ind << " " << ind 
-                                     << ") sub_" << l->id << ") #b1)\n";     
+                    write_set_elem_literal(smt_subspace, elem_name, l->pol);
+                    smt_subspace << "\n";
                                      
-                    smt_subspace_vars.back().insert("sub_" + to_string(l->id));
+                    smt_subspace_vars.back().insert(elem_name);
                 }
                 
             } else if(l->type == LiteralType::HELPER){
@@ -781,14 +806,14 @@ void Encoder::write_lit_definition_clauses_fun(LiteralPtr lit, bool should_defin
                 if(id_map.find(l->id) != id_map.end()){
                     auto var = get<BasicVar*>(*id_map[l->id]);
                     if(l->pol)
-                        sat_smt_funs << "(= " << *var->name << " 1) ";
+                        sat_smt_funs << *var->name << " ";
                     else
-                        sat_smt_funs << "(not (= " << *var->name << " 1)) ";
+                        sat_smt_funs << "(not " << *var->name << ") ";
                 } else {
                     if(l->pol)
-                        sat_smt_funs << "(= sub_" << l->id << " 1) ";
+                        sat_smt_funs << "sub_" << l->id << " ";
                     else
-                        sat_smt_funs << "(not (= sub_" << l->id << " 1)) ";                    
+                        sat_smt_funs << "(not sub_" << l->id << ") ";                    
                 }
             }else if(l->type == LiteralType::DIRECT){
                 string num_string = (l->val < 0) ? "(- " + to_string(-l->val) + ")" : to_string(l->val);
@@ -805,22 +830,13 @@ void Encoder::write_lit_definition_clauses_fun(LiteralPtr lit, bool should_defin
                         sat_smt_funs << "(not (= sub_" << l->id << " " << num_string << ")) ";                    
                 }                
             } else if(l->type == LiteralType::SET_ELEM){
-                int ind = l->val - bv_left;
+                string elem_name = set_elem_smt_name(id_map, l->id, l->val);
                 if(id_map.find(l->id) != id_map.end()){
-                    auto var = get<BasicVar*>(*id_map[l->id]);
-                    if(l->pol)
-                        sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
-                                     << ") " << *var->name << ") #b1)\n"; 
-                    else
-                        sat_smt_funs << "(distinct ((_ extract " << ind << " " << ind 
-                                     << ") " << *var->name << ") #b1)\n"; 
+                    write_set_elem_literal(sat_smt_funs, elem_name, l->pol);
+                    sat_smt_funs << "\n";
                 } else {
-                    if(l->pol)
-                        sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
-                                     << ") sub_" << l->id << ") #b1)\n"; 
-                    else
-                        sat_smt_funs << "(distinct ((_ extract " << ind << " " << ind 
-                                     << ") sub_" << l->id << ") #b1)\n";                    
+                    write_set_elem_literal(sat_smt_funs, elem_name, l->pol);
+                    sat_smt_funs << "\n";
                 }
                 
             } else if(l->type == LiteralType::HELPER){
@@ -876,14 +892,14 @@ void Encoder::write_lit_definition_clauses_fun(LiteralPtr lit, bool should_defin
                 if(id_map.find(l->id) != id_map.end()){
                     auto var = get<BasicVar*>(*id_map[l->id]);
                     if(l->pol)
-                        sat_smt_funs << "(= " << *var->name << " 1) ";
+                        sat_smt_funs << *var->name << " ";
                     else
-                        sat_smt_funs << "(not (= " << *var->name << " 1)) ";
+                        sat_smt_funs << "(not " << *var->name << ") ";
                 } else {
                     if(l->pol)
-                        sat_smt_funs << "(= sub_" << l->id << " 1) ";
+                        sat_smt_funs << "sub_" << l->id << " ";
                     else
-                        sat_smt_funs << "(not (= sub_" << l->id << " 1)) ";                    
+                        sat_smt_funs << "(not sub_" << l->id << ") ";                    
                 }
             }else if(l->type == LiteralType::DIRECT){
                 string num_string = (l->val < 0) ? "(- " + to_string(-l->val) + ")" : to_string(l->val);
@@ -900,22 +916,13 @@ void Encoder::write_lit_definition_clauses_fun(LiteralPtr lit, bool should_defin
                         sat_smt_funs << "(not (= sub_" << l->id << " " << num_string << ")) ";                    
                 }                
             } else if(l->type == LiteralType::SET_ELEM){
-                int ind = l->val - bv_left;
+                string elem_name = set_elem_smt_name(id_map, l->id, l->val);
                 if(id_map.find(l->id) != id_map.end()){
-                    auto var = get<BasicVar*>(*id_map[l->id]);
-                    if(l->pol)
-                        sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
-                                     << ") " << *var->name << ") #b1)\n"; 
-                    else
-                        sat_smt_funs << "(distinct ((_ extract " << ind << " " << ind 
-                                     << ") " << *var->name << ") #b1)\n"; 
+                    write_set_elem_literal(sat_smt_funs, elem_name, l->pol);
+                    sat_smt_funs << "\n";
                 } else {
-                    if(l->pol)
-                        sat_smt_funs << "(= ((_ extract " << ind << " " << ind 
-                                     << ") sub_" << l->id << ") #b1)\n"; 
-                    else
-                        sat_smt_funs << "(distinct ((_ extract " << ind << " " << ind 
-                                     << ") sub_" << l->id << ") #b1)\n";                    
+                    write_set_elem_literal(sat_smt_funs, elem_name, l->pol);
+                    sat_smt_funs << "\n";
                 }
                 
             } else if(l->type == LiteralType::HELPER){
@@ -1108,9 +1115,9 @@ void Encoder::write_sat_dom_clauses(CNF& clauses) {
 
                     right_total << "(= " << curr_var << " g_" << curr_var << ")\n";
                 } else if(lit->type == LiteralType::BOOL_VARIABLE){
-                    smt_sat_funs << "(define-fun g_" << curr_var << " () Int\n";
+                    smt_sat_funs << "(define-fun g_" << curr_var << " () Bool\n";
 
-                    smt_sat_funs << "(ite x" << literal_to_num[{lit->type, lit->id, lit->val}] << " 1 0)";
+                    smt_sat_funs << "x" << literal_to_num[{lit->type, lit->id, lit->val}];
                     smt_sat_funs << "\n)" << endl;
 
                     right_total << "(= " << curr_var << " g_" << curr_var << ")\n";
@@ -1160,103 +1167,70 @@ void Encoder::write_sat_dom_clauses(CNF& clauses) {
 
 void Encoder::handle_set_vars(){
     for(auto &var : set_vars){
-        int j = 0;
         auto elems = get_set_elems(*var);
-
-        smt_sat_funs << "(define-fun g_" << *var->name << " () (_ BitVec \n";
-
-        if((*elems).size() > 0)
-            smt_sat_funs << "(bvor\n";
-
-        int bv_diff = bv_right - bv_left + 1;
-        for(int i = bv_left; i <= bv_right; i++){
-            int lit_num = literal_to_num[{LiteralType::SET_ELEM, var->id, i}];
-            if(j < (int)(*elems).size() && (*elems)[j] == i){
-                j++;
-
-                smt_sat_funs << "(ite x" << lit_num << " #b";
-                
-                for(int k = i + 1; k <= bv_right; k++)
-                    smt_sat_funs << "0";
-                smt_sat_funs << "1";
-                for(int k = bv_left; k < i; k++)
-                    smt_sat_funs << "0";
-
-                smt_sat_funs << " #b";
-                for(int k = 0; k < bv_diff; k++)
-                    smt_sat_funs << "0";
-                smt_sat_funs << ")\n";
-
-            } else {
-                trivial_encoding_domains << "(distinct ((_ extract " << i - bv_left << " " << i - bv_left << ") " 
-                                        << *var->name << ") #b1)\n---" << endl;
-                smt_subspace << "(distinct ((_ extract " << i - bv_left << " " << i - bv_left << ") " 
-                                        << *var->name << ") #b1)\n---" << endl;
-                
-                smt_subspace_vars.back().insert(*var->name);
-                smt_subspace_vars.push_back({});
-                smt_dom_vars.back().insert(*var->name);
-                smt_dom_vars.push_back({});
-
-                if(is2step){
-                    smt_subspace_step1 << "(distinct ((_ extract " << i - bv_left << " " << i - bv_left << ") " 
-                        << *var->name << ") #b1)\n---" << endl;
-                }
-            }
-        }
-
-        if((*elems).size() > 0)
-            smt_sat_funs << ")\n)" << endl;
-        else {
-            smt_sat_funs << "(_ bv0 " << bv_right - bv_left + 1 << ")\n)\n" << endl;
-        }
         
-        right_total << "(= " << *var->name << " g_" << *var->name << ")" << endl;
+        for(int elem : *elems){
+            int lit_num = literal_to_num[{LiteralType::SET_ELEM, var->id, elem}];
+            string elem_name = set_elem_smt_name(*var, elem);
+
+            smt_sat_funs << "(define-fun g_" << elem_name << " () Bool\n";
+            smt_sat_funs << "x" << lit_num << "\n)\n";
+
+            right_total << "(= " << elem_name << " g_" << elem_name << ")" << endl;
+        }
     }
+}
+
+static string smt_int(int val){
+    return val < 0 ? "(- " + to_string(-val) + ")" : to_string(val);
+}
+
+static void write_set_membership_formula(ostream& os, const string& int_var,
+                                         const string& set_name, const vector<int>& elems){
+    if(elems.empty()){
+        os << "false";
+        return;
+    }
+
+    os << "(or\n";
+    for(int elem : elems)
+        os << "(and (= " << int_var << " " << smt_int(elem) << ") "
+           << set_elem_smt_name(set_name, elem) << ")\n";
+    os << ")";
 }
 
 void Encoder::handle_set_in_constraints(){
-    for(auto [var, set] : set_in_pairs){
-        string ind = "(- " + var + " " + to_string(bv_left) + ")";
+    for(auto [var, set, elems] : set_in_pairs){
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= ((_ extract 0 0) (bvlshr " << set << " ((_ int2bv "
-                                     << bv_right - bv_left + 1 << ") (- " << var
-                                     << " " << bv_left << ")))) #b1)\n)" << endl; 
+        write_set_membership_formula(trivial_encoding_constraints, var, set, elems);
+        trivial_encoding_constraints << "\n)" << endl; 
 
-        smt_constraints_vars.push_back({set, var});
+        smt_constraints_vars.push_back({var});
+        for(int elem : elems)
+            smt_constraints_vars.back().insert(set_elem_smt_name(set, elem));
     }
 
-    for(auto [var, set, r] : set_in_reif_pairs){
-        string ind = "(- " + var + " " + to_string(bv_left) + ")";
+    for(auto [var, set, r, elems] : set_in_reif_pairs){
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << r << " (ite (= ((_ extract 0 0) (bvlshr " << set << " ((_ int2bv "
-                                     << bv_right - bv_left + 1 << ") (- " << var
-                                     << " " << bv_left << ")))) #b1) 1 0))\n)" << endl; 
+        trivial_encoding_constraints << "(= " << r << " ";
+        write_set_membership_formula(trivial_encoding_constraints, var, set, elems);
+        trivial_encoding_constraints << ")\n)" << endl; 
 
-        smt_constraints_vars.push_back({set, var, r});
+        smt_constraints_vars.push_back({var, r});
+        for(int elem : elems)
+            smt_constraints_vars.back().insert(set_elem_smt_name(set, elem));
     }
 
-    for(auto [var, set, r] : set_in_imp_pairs){
-        string ind = "(- " + var + " " + to_string(bv_left) + ")";
+    for(auto [var, set, r, elems] : set_in_imp_pairs){
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << r << " 1) (= ((_ extract 0 0) (bvlshr " << set << " ((_ int2bv "
-                                     << bv_right - bv_left + 1 << ") (- " << var
-                                     << " " << bv_left << ")))) #b1))\n)" << endl;
+        trivial_encoding_constraints << "(=> " << r << " ";
+        write_set_membership_formula(trivial_encoding_constraints, var, set, elems);
+        trivial_encoding_constraints << ")\n)" << endl;
                                      
-        smt_constraints_vars.push_back({set, var, r});
+        smt_constraints_vars.push_back({var, r});
+        for(int elem : elems)
+            smt_constraints_vars.back().insert(set_elem_smt_name(set, elem));
     }
-}
-
-void Encoder::write_ones(ofstream& proof_file){
-
-    int bv_diff = bv_right - bv_left + 1;
-
-    proof_file << "(define-fun ones ((?x (_ BitVec " << bv_diff << "))) Int\n";
-    proof_file << "(+\n";
-    for(int i = 0; i < bv_diff; i++){
-        proof_file << "(bv2nat ((_ extract " << i << " " << i << ") ?x))\n"; 
-    }   
-    proof_file << "))\n";
 }
 
 void Encoder::write_mod_div(ofstream& proof_file){
@@ -1294,61 +1268,6 @@ void Encoder::write_mod_div(ofstream& proof_file){
     ")\n";
 
 }
-
-void Encoder::write_lex(ofstream& proof_file){
-
-    int bv_diff = bv_right - bv_left + 1;
-    proof_file << "(define-fun leftmost_one ((?x (_ BitVec " << bv_diff << "))) Int\n";
-    proof_file << "(+ " << ((bv_left < 0) ? ("(- " + to_string(-bv_left) + ")") : to_string(bv_left)) << "\n";
-
-    for(int i = bv_diff - 1; i >= 0; i--){
-        proof_file << "(ite (= (bvand (bvlshr ?x (_ bv" << i << " " << bv_diff << ")) (_ bv1 "
-                   << bv_diff << ")) (_ bv1 " << bv_diff << ")) " 
-                   << i << " \n";
-    }
-
-    proof_file << "(- 1))\n";
-    for(int i = bv_left; i <= bv_right; i++)
-        proof_file << ")";
-    proof_file << "\n)\n" << endl;
-
-    proof_file << "(define-fun rightmost_one ((?x (_ BitVec " << bv_diff << "))) Int\n";
-    proof_file << "(+ " << ((bv_left < 0) ? ("(- " + to_string(-bv_left) + ")") : to_string(bv_left)) << "\n";
-
-    for(int i = 0; i < bv_diff; i++){
-        proof_file << "(ite (= (bvand (bvlshr ?x (_ bv" << i << " " << bv_diff << ")) (_ bv1 "
-                   << bv_diff << ")) (_ bv1 " << bv_diff << ")) " 
-                   << i << " \n";
-    }
-
-    proof_file << "(- 1))\n";
-    for(int i = bv_left; i <= bv_right; i++)
-        proof_file << ")";
-    proof_file << "\n)\n" << endl;
-
-    proof_file << "(define-fun rev ((?x (_ BitVec " << bv_diff << "))) (_ BitVec " << bv_diff << ")\n";
-    proof_file << "(concat\n";
-    for(int i = 0; i < bv_diff; i++){
-        proof_file << "((_ extract " << i << " " << i << ") ?x)\n"; 
-    }
-    proof_file << ")\n)\n" << endl;
-
-    proof_file << "(define-fun prefix ((?x (_ BitVec " << bv_diff << ")) (?y (_ BitVec " << bv_diff << "))) Bool\n";
-    proof_file << "(or\n";
-    proof_file << "(= ?x (_ bv0 " << bv_diff << "))\n";
-    for(int i = 1; i < bv_diff; i++){
-        proof_file << "(= (rev ?x) (bvand (rev ?y) #b";
-        for(int j = 0; j < i; j++)
-            proof_file << "1";
-        for(int j = i; j < bv_diff; j++)
-            proof_file << "0";
-
-        proof_file << "))\n";
-    }
-    proof_file << "(= (rev ?x) (rev ?y))\n)\n)\n" << endl;
-
-}
-
 void Encoder::flush_buffers(){
     trivial_encoding_vars.flush();
     trivial_encoding_constraints.flush();
@@ -1649,45 +1568,18 @@ void Encoder::generate_proof(){
     proof_file << "(set-option :produce-proofs true)\n";
 
     //Setting logic
-    if(isBV && isLIA){
-        proof_file << "(set-logic ALL";
-    } else {    
-        proof_file << "(set-logic QF_";
-        if(isUF || isBV)
-            proof_file << "UF";
-        if(isBV)
-            proof_file << "BV";
-        if(isNIA)
-            proof_file << "NIA";
-        else if(isLIA)
-            proof_file << "LIA";
-    }
+    proof_file << "(set-logic QF_";
+    if(isUF)
+        proof_file << "UF";
+    if(isNIA)
+        proof_file << "NIA";
+    else if(isLIA)
+        proof_file << "LIA";
     proof_file << ")\n" << endl;
-
-    if(needLex) 
-        write_lex(proof_file);
-
-    //Setting BitVec sizes
-    int bv_diff = bv_right - bv_left + 1;
 
     handle_set_vars();
     handle_set_in_constraints();
-    if(needOnes)
-        write_ones(proof_file);
-
-    string command =
-        "awk '/BitVec/{$0=$0\"" + std::to_string(bv_diff) + "))\"}1' "
-        "trivial_encoding_vars.smt2 > tmp && mv tmp trivial_encoding_vars.smt2";
-
-    system(command.c_str());
-
-    command =
-        "awk '/define-fun/ { gsub(/BitVec/, \"BitVec " +
-        std::to_string(bv_diff) +
-    ")\") } 1' smt_sat_funs.smt2 > tmp && mv tmp smt_sat_funs.smt2";
-
-
-    system(command.c_str());
+    flush_buffers();
 
     system("cat trivial_encoding_vars.smt2 >> proof.smt2");
 
@@ -1776,22 +1668,7 @@ void Encoder::generate_proof(){
         proof_file << ")" << endl;
     }
 
-    ifstream sat_constraints_file("sat_constraints.smt2");
-    int k = 1;
-
-    proof_file << "(define-fun sat_c" << k++ << " () Bool\n";
-    proof_file << "(and " << endl;
-
-    while(getline(sat_constraints_file, line)){
-        if(line == "---"){
-            proof_file << ")\n)" << endl;
-
-            proof_file << "(define-fun sat_c" << k++ << " () Bool\n";
-            proof_file << "(and " << endl;
-        } else
-            proof_file << line << endl;
-    }
-    proof_file << ")\n)" << endl;
+    write_sat_constraint_definitions(proof_file);
 
     proof_file << "(define-fun sat_encode () Bool\n";
     proof_file << "(and\n";
@@ -1819,37 +1696,19 @@ void Encoder::generate_proof(){
         stringstream ss(line);
         string token1, token2;
 
-        if(line.find("extract") != line.npos){
+        ss >> token1; // (=
+        ss >> token1; // bool var
 
-            ss >> token1; // (=
-            ss >> token1; // bool var
-
-            smt_sat_rel_vars.back().insert(token1);
-            ss >> token2; // (=
-            ss >> token2; // ((_
-            ss >> token2; // extract
-            ss >> token2; // x
-            ss >> token2; // x)
+        smt_sat_rel_vars.back().insert(token1);
+        ss >> token2; // SMT term or operator
+        if(token2 == "(<=" || token2 == "(=")
             ss >> token2; // var
+        if(!token2.empty() && token2.back() == ')')
+            token2.pop_back();
 
-            token2.pop_back(); // )
+        smt_sat_rel_vars.back().insert(token2);
 
-            smt_sat_rel_vars.back().insert(token2);
-
-            var_pairs.insert({token1, token2});
-        } else {
-
-            ss >> token1; // (=
-            ss >> token1; // bool var
-
-            smt_sat_rel_vars.back().insert(token1);
-            ss >> token2; // (<=
-            ss >> token2; // var
-
-            smt_sat_rel_vars.back().insert(token2);
-
-            var_pairs.insert({token1, token2});
-        }
+        var_pairs.insert({token1, token2});
 
         if(i == granulation){
             proof_file << ")\n)\n";
@@ -2214,48 +2073,22 @@ void Encoder::generate_proof2step(){
     proof_file << "(set-option :produce-proofs true)\n";
 
     //Setting logic
-    if(isBV && isLIA){
-        proof_file << "(set-logic ALL";
-    } else {    
-        proof_file << "(set-logic QF_";
-        if(isUF || isBV)
-            proof_file << "UF";
-        if(isBV)
-            proof_file << "BV";
-        if(isNIA)
-            proof_file << "NIA";
-        else if(isLIA)
-            proof_file << "LIA";
-    }
+    proof_file << "(set-logic QF_";
+    if(isUF)
+        proof_file << "UF";
+    if(isNIA)
+        proof_file << "NIA";
+    else if(isLIA)
+        proof_file << "LIA";
     proof_file << ")\n" << endl;
-
-    //Setting BitVec sizes
-    int bv_diff = bv_right - bv_left + 1;
 
     handle_set_vars();
     handle_set_in_constraints();
-    if(needOnes)
-        write_ones(proof_file);
+    flush_buffers();
     if(needModDiv)
         write_mod_div(proof_file);
-    if(needLex)
-        write_lex(proof_file);
 
     write_sat_dom_clauses(sat_dom_clauses2step);
-
-    string command =
-        "awk '/BitVec/{$0=$0\"" + std::to_string(bv_diff) + "))\"}1' "
-        "trivial_encoding_vars.smt2 > tmp && mv tmp trivial_encoding_vars.smt2";
-
-    system(command.c_str());
-
-    command =
-        "awk '/define-fun/ { gsub(/BitVec/, \"BitVec " +
-        std::to_string(bv_diff) +
-    ")\") } 1' smt_sat_funs.smt2 > tmp && mv tmp smt_sat_funs.smt2";
-
-
-    system(command.c_str());
 
     system("cat trivial_encoding_vars.smt2 >> proof_step1.smt2");
 
@@ -2634,23 +2467,14 @@ void Encoder::generate_proof2step(){
     proof_file << "(set-option :produce-proofs true)\n";
 
     //Setting logic
-    if(isBV && isLIA){
-        proof_file << "(set-logic ALL";
-    } else {    
-        proof_file << "(set-logic QF_";
-        if(isUF || isBV)
-            proof_file << "UF";
-        if(isBV)
-            proof_file << "BV";
-        if(isNIA)
-            proof_file << "NIA";
-        else if(isLIA)
-            proof_file << "LIA";
-    }
+    proof_file << "(set-logic QF_";
+    if(isUF)
+        proof_file << "UF";
+    if(isNIA)
+        proof_file << "NIA";
+    else if(isLIA)
+        proof_file << "LIA";
     proof_file << ")\n" << endl;
-
-    if(needLex)
-        write_lex(proof_file);
 
     system("cat trivial_encoding_vars.smt2 >> proof.smt2");
 
@@ -2762,22 +2586,7 @@ void Encoder::generate_proof2step(){
         proof_file << ")" << endl;
     }
 
-    ifstream sat_constraints_file("sat_constraints.smt2");
-    int k = 1;
-
-    proof_file << "(define-fun sat_c" << k++ << " () Bool\n";
-    proof_file << "(and " << endl;
-    
-    while(getline(sat_constraints_file, line)){
-        if(line == "---"){
-            proof_file << ")\n)" << endl;
-
-            proof_file << "(define-fun sat_c" << k++ << " () Bool\n";
-            proof_file << "(and " << endl;
-        } else
-            proof_file << line << endl;
-    }
-    proof_file << ")\n)" << endl;
+    write_sat_constraint_definitions(proof_file);
 
     proof_file << "(define-fun sat_encode () Bool\n";
     proof_file << "(and\n";
@@ -2805,37 +2614,19 @@ void Encoder::generate_proof2step(){
         stringstream ss(line);
         string token1, token2;
 
-        if(line.find("extract") != line.npos){
+        ss >> token1; // (=
+        ss >> token1; // bool var
 
-            ss >> token1; // (=
-            ss >> token1; // bool var
-
-            smt_sat_rel_vars.back().insert(token1);
-            ss >> token2; // (=
-            ss >> token2; // ((_
-            ss >> token2; // extract
-            ss >> token2; // x
-            ss >> token2; // x)
+        smt_sat_rel_vars.back().insert(token1);
+        ss >> token2; // SMT term or operator
+        if(token2 == "(<=" || token2 == "(=")
             ss >> token2; // var
+        if(!token2.empty() && token2.back() == ')')
+            token2.pop_back();
 
-            token2.pop_back(); // )
+        smt_sat_rel_vars.back().insert(token2);
 
-            smt_sat_rel_vars.back().insert(token2);
-
-            var_pairs.insert({token1, token2});
-        } else {
-
-            ss >> token1; // (=
-            ss >> token1; // bool var
-
-            smt_sat_rel_vars.back().insert(token1);
-            ss >> token2; // (<=
-            ss >> token2; // var
-
-            smt_sat_rel_vars.back().insert(token2);
-
-            var_pairs.insert({token1, token2});
-        }
+        var_pairs.insert({token1, token2});
 
         if(i == granulation){
             proof_file << ")\n)\n";
@@ -3570,15 +3361,8 @@ void Encoder::encode_variable(Variable& var, CNF& cnf_clauses) {
             if(export_proof){
                 set_vars.push_back(basic_var);
 
-                isBV = true;
-
-                if(bv_left > v[0])
-                    bv_left = v[0];
-
-                if(bv_right < v[v.size()-1])
-                    bv_right = v[v.size()-1];
-
-                trivial_encoding_vars << "(declare-const " << *basic_var->name << " (_ BitVec \n"; 
+                for(int elem : v)
+                    trivial_encoding_vars << "(declare-const " << set_elem_smt_name(*basic_var, elem) << " Bool)\n"; 
             }
 
         } else if(holds_alternative<BasicParType>(*basic_var->type)){
@@ -3589,25 +3373,7 @@ void Encoder::encode_variable(Variable& var, CNF& cnf_clauses) {
                 cnf_clauses.push_back(clause);
 
                 if(export_proof){
-                    isLIA = true;
-
-                    trivial_encoding_vars << "(declare-const " << *basic_var->name << " Int)\n";
-                    trivial_encoding_domains << "(<= 0 " << *basic_var->name << " 1)\n";
-                    trivial_encoding_domains << "---" << endl;
-                    
-                    smt_subspace << "(<= 0 " << *basic_var->name << " 1)\n";
-                    smt_subspace << "---" << endl;
-
-                    smt_subspace_vars.back().insert(*basic_var->name);
-                    smt_subspace_vars.push_back({});
-                    smt_dom_vars.back().insert(*basic_var->name);
-                    smt_dom_vars.push_back({});
-                    
-                    smt_subspace_step1 << "(<= 0 " << *basic_var->name << " 1)\n";
-                    smt_subspace_step1 << "---" << endl;
-
-                    smt_subspace_step1_vars.back().insert(*basic_var->name);
-                    smt_subspace_step1_vars.push_back({});
+                    trivial_encoding_vars << "(declare-const " << *basic_var->name << " Bool)\n";
 
                     sat_dom_clauses.push_back(clause);
                 }
@@ -3729,10 +3495,7 @@ BasicVar* Encoder::encode_bool_helper_variable(CNF& cnf_clauses) {
     // id_map[sub_id] = new Variable(bool_var);
 
     if(export_proof){
-        isLIA = true;
-
-        trivial_encoding_vars << "(declare-const " << *bool_var->name << " Int)\n";
-        trivial_encoding_domains << "(<= 0 " << *bool_var->name << " 1)\n---\n";
+        trivial_encoding_vars << "(declare-const " << *bool_var->name << " Bool)\n";
 
     }
 
@@ -3808,13 +3571,11 @@ BasicVar* Encoder::encode_param_as_var(Parameter& param, CNF& cnf_clauses){
         cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, sub_id, bool_val ? true : false, 0)});
 
         if(export_proof){
-            isLIA = true;
-
-            trivial_encoding_vars << "(declare-const " << *bool_var->name << " Int)\n";
-            trivial_encoding_domains << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+            trivial_encoding_vars << "(declare-const " << *bool_var->name << " Bool)\n";
+            trivial_encoding_domains << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
             trivial_encoding_domains << "---" << endl;
 
-            smt_subspace << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+            smt_subspace << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
             smt_subspace << "---" << endl;
 
             smt_subspace_vars.back().insert(*bool_var->name);
@@ -3822,7 +3583,7 @@ BasicVar* Encoder::encode_param_as_var(Parameter& param, CNF& cnf_clauses){
             smt_dom_vars.back().insert(*bool_var->name);
             smt_dom_vars.push_back({});
          
-            smt_subspace_step1 << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+            smt_subspace_step1 << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
             smt_subspace_step1 << "---" << endl;
 
             smt_subspace_step1_vars.back().insert({*bool_var->name});
@@ -3861,15 +3622,8 @@ BasicVar* Encoder::encode_param_as_var(Parameter& param, CNF& cnf_clauses){
         if(export_proof){
             set_vars.push_back(set_var);
 
-            isBV = true;
-
-            if(bv_left > (*elems)[0])
-                bv_left = (*elems)[0];
-
-            if(bv_right < (*elems)[(*elems).size()-1])
-                bv_right = (*elems)[(*elems).size()-1];
-
-            trivial_encoding_vars << "(declare-const " << *set_var->name << " (_ BitVec \n"; 
+            for(int elem : *elems)
+                trivial_encoding_vars << "(declare-const " << set_elem_smt_name(*set_var, elem) << " Bool)\n"; 
         }
 
         return set_var;
@@ -3907,15 +3661,13 @@ BasicVar* Encoder::get_var(Constraint& constr, int ind, CNF& cnf_clauses){
             cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, sub_id, bool_val ? true : false, 0)});
 
             if(export_proof){
-                isLIA = true;
-
                 sat_dom_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, sub_id, bool_val ? true : false, 0)});
 
-                trivial_encoding_vars << "(declare-const " << *bool_var->name << " Int)\n";
-                trivial_encoding_domains << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+                trivial_encoding_vars << "(declare-const " << *bool_var->name << " Bool)\n";
+                trivial_encoding_domains << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
                 trivial_encoding_domains << "---" << endl;
 
-                smt_subspace << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+                smt_subspace << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
                 smt_subspace << "---" << endl;
 
                 smt_subspace_vars.back().insert(*bool_var->name);
@@ -3923,7 +3675,7 @@ BasicVar* Encoder::get_var(Constraint& constr, int ind, CNF& cnf_clauses){
                 smt_dom_vars.back().insert(*bool_var->name);
                 smt_dom_vars.push_back({});
 
-                smt_subspace_step1 << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+                smt_subspace_step1 << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
                 smt_subspace_step1 << "---" << endl;     
             
                 smt_subspace_step1_vars.back().insert({*bool_var->name});
@@ -3957,21 +3709,17 @@ BasicVar* Encoder::get_var(Constraint& constr, int ind, CNF& cnf_clauses){
 
                 if(export_proof){
                     sat_dom_clauses.push_back({make_literal(LiteralType::SET_ELEM, sub_id, true, elem)});
-                    smt_subspace << "(= ((_ extract " << elem - bv_left << " " << elem - bv_left << ") " 
-                                 << *name << ") #b1)\n---\n";  
+                    smt_subspace << set_elem_smt_name(*name, elem) << "\n---\n";  
                                  
-                    smt_subspace_vars.back().insert(*name);
+                    smt_subspace_vars.back().insert(set_elem_smt_name(*name, elem));
                     smt_subspace_vars.push_back({});
                 }
             }
 
             if(export_proof){
                 set_vars.push_back(set_var);
-
-                isBV = true;
-
-
-                trivial_encoding_vars << "(declare-const " << *set_var->name << " (_ BitVec \n"; 
+                for(int elem : *elems)
+                    trivial_encoding_vars << "(declare-const " << set_elem_smt_name(*set_var, elem) << " Bool)\n"; 
             }
 
             return set_var;
@@ -4088,13 +3836,11 @@ BasicVar* Encoder::get_var_from_array(const ArrayLiteral& a, int ind){
             cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, sub_id, bool_val ? true : false, 0)});
 
             if(export_proof){
-                isLIA = true;
-
-                trivial_encoding_vars << "(declare-const " << *bool_var->name << " Int)\n";
-                trivial_encoding_domains << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+                trivial_encoding_vars << "(declare-const " << *bool_var->name << " Bool)\n";
+                trivial_encoding_domains << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
                 trivial_encoding_domains << "---" << endl;
 
-                smt_subspace << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+                smt_subspace << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
                 smt_subspace << "---" << endl;
 
                 smt_subspace_vars.back().insert(*bool_var->name);
@@ -4102,7 +3848,7 @@ BasicVar* Encoder::get_var_from_array(const ArrayLiteral& a, int ind){
                 smt_dom_vars.back().insert(*bool_var->name);
                 smt_dom_vars.push_back({});
                 
-                smt_subspace_step1 << "(= " << *bool_var->name << " " << (bool_val ? 1 : 0) << ")\n";
+                smt_subspace_step1 << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
                 smt_subspace_step1 << "---" << endl;
 
                 smt_subspace_step1_vars.back().insert({*bool_var->name});
@@ -4141,15 +3887,8 @@ BasicVar* Encoder::get_var_from_array(const ArrayLiteral& a, int ind){
             if(export_proof){
                 set_vars.push_back(set_var);
 
-                isBV = true;
-
-                if(bv_left > (*elems)[0])
-                    bv_left = (*elems)[0];
-
-                if(bv_right < (*elems)[(*elems).size()-1])
-                    bv_right = (*elems)[(*elems).size()-1];
-
-                trivial_encoding_vars << "(declare-const " << *set_var->name << " (_ BitVec \n"; 
+                for(int elem : *elems)
+                    trivial_encoding_vars << "(declare-const " << set_elem_smt_name(*set_var, elem) << " Bool)\n"; 
             }            
 
             return set_var;
@@ -5654,7 +5393,7 @@ void Encoder::encode_int_eq_imp(const BasicVar& a, const BasicVar& b, const Basi
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (= " << *a.name << " " 
+        trivial_encoding_constraints << "(=> " << *r.name << " (= " << *a.name << " " 
                                      << *b.name << "))\n)\n";
     }
 
@@ -5747,7 +5486,7 @@ void Encoder::encode_int_le_imp(const BasicVar& a, const BasicVar& b, const Basi
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (<= " << *a.name << " " 
+        trivial_encoding_constraints << "(=> " << *r.name << " (<= " << *a.name << " " 
                                      << *b.name << "))\n)\n";
     }
 
@@ -5820,29 +5559,28 @@ void Encoder::encode_substitution(const BasicVar &x, const BasicVar &x1, int coe
 
     for(int i = -x_right - 1; i <= -x_left; i++){
         for(int j = lower_bound_x1 - 1; j <= upper_bound_x1; j++){
-            for(int k = lower_bound_x2 - 1; k <= upper_bound_x2; k++){
-                if(i + j + k == -2){
-                    
-                    new_clause.push_back(make_literal(LiteralType::ORDER, x.id, false, -i - 1));
+            int k = -2 - i - j;
+            if(k < lower_bound_x2 - 1 || k > upper_bound_x2)
+                continue;
 
-                    if(coef1 > 0)
-                        new_clause.push_back(make_literal(LiteralType::ORDER, x1.id, true, (int)floor((double)j/coef1)));
-                    else 
-                        new_clause.push_back(make_literal(LiteralType::ORDER, x1.id, false, (int)ceil((double)j/coef1) - 1));
-                    
+            new_clause.push_back(make_literal(LiteralType::ORDER, x.id, false, -i - 1));
 
-                    if(coef2 > 0)
-                        new_clause.push_back(make_literal(LiteralType::ORDER, x2.id, true, (int)floor((double)k/coef2)));
-                    else
-                        new_clause.push_back(make_literal(LiteralType::ORDER, x2.id, false, (int)ceil((double)k/coef2) - 1));
+            if(coef1 > 0)
+                new_clause.push_back(make_literal(LiteralType::ORDER, x1.id, true, (int)floor((double)j/coef1)));
+            else 
+                new_clause.push_back(make_literal(LiteralType::ORDER, x1.id, false, (int)ceil((double)j/coef1) - 1));
+            
 
-                    cnf_clauses.push_back(new_clause);
+            if(coef2 > 0)
+                new_clause.push_back(make_literal(LiteralType::ORDER, x2.id, true, (int)floor((double)k/coef2)));
+            else
+                new_clause.push_back(make_literal(LiteralType::ORDER, x2.id, false, (int)ceil((double)k/coef2) - 1));
 
-                    if(export_proof)
-                        sat_constraint_clauses.push_back(new_clause);
-                    new_clause.clear();
-                }
-            }
+            cnf_clauses.push_back(new_clause);
+
+            if(export_proof)
+                sat_constraint_clauses.push_back(new_clause);
+            new_clause.clear();
         }
     }    
 
@@ -5857,29 +5595,28 @@ void Encoder::encode_substitution(const BasicVar &x, const BasicVar &x1, int coe
 
     for(int i = x_left - 1; i <= x_right; i++){
         for(int j = lower_bound_x1 - 1; j <= upper_bound_x1; j++){
-            for(int k = lower_bound_x2 - 1; k <= upper_bound_x2; k++){
-                if(i + j + k == -2){
+            int k = -2 - i - j;
+            if(k < lower_bound_x2 - 1 || k > upper_bound_x2)
+                continue;
 
-                    new_clause.push_back(make_literal(LiteralType::ORDER, x.id, true, i));
+            new_clause.push_back(make_literal(LiteralType::ORDER, x.id, true, i));
 
-                    if(coef1 > 0)
-                        new_clause.push_back(make_literal(LiteralType::ORDER, x1.id, true, (int)floor((double)j/coef1)));
-                    else 
-                        new_clause.push_back(make_literal(LiteralType::ORDER, x1.id, false, (int)ceil((double)j/coef1) - 1));
-                    
+            if(coef1 > 0)
+                new_clause.push_back(make_literal(LiteralType::ORDER, x1.id, true, (int)floor((double)j/coef1)));
+            else 
+                new_clause.push_back(make_literal(LiteralType::ORDER, x1.id, false, (int)ceil((double)j/coef1) - 1));
+            
 
-                    if(coef2 > 0)
-                        new_clause.push_back(make_literal(LiteralType::ORDER, x2.id, true, (int)floor((double)k/coef2)));
-                    else
-                        new_clause.push_back(make_literal(LiteralType::ORDER, x2.id, false, (int)ceil((double)k/coef2) - 1));                         
-                
-                    cnf_clauses.push_back(new_clause);
+            if(coef2 > 0)
+                new_clause.push_back(make_literal(LiteralType::ORDER, x2.id, true, (int)floor((double)k/coef2)));
+            else
+                new_clause.push_back(make_literal(LiteralType::ORDER, x2.id, false, (int)ceil((double)k/coef2) - 1));                         
+        
+            cnf_clauses.push_back(new_clause);
 
-                    if(export_proof)
-                        sat_constraint_clauses.push_back(new_clause);
-                    new_clause.clear();
-                }
-            }
+            if(export_proof)
+                sat_constraint_clauses.push_back(new_clause);
+            new_clause.clear();
         }
     }
 
@@ -6034,7 +5771,7 @@ void Encoder::encode_int_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &v
         }
     }
     if(c < sum1 || c > sum2){
-        if(export_proof && is2step)
+        if(export_proof && vars.size() > 3)
             constraints2step2 << "false\n)\n";
 
         declare_unsat(cnf_clauses);
@@ -6205,7 +5942,7 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
         if(export_proof){
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
-            if(is2step)
+            if(vars.size() > 3)
                 constraints2step2 << "(= r 0)\n)\n";
         }
 
@@ -6329,7 +6066,7 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
     if(export_proof){
         string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
         constraints2step2 << "(= " << *r.name << 
-                                " (ite (= " << *sub_var1->name << " " << c_string << ") 1 0))\n";
+                                " (= " << *sub_var1->name << " " << c_string << "))\n";
 
     }   
     
@@ -6355,7 +6092,7 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
             constraint2step_set.insert(next_constraint_num);
 
             constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-            constraints2step1 << "(=> (= " << *r.name << " 1) (= (+ ";
+            constraints2step1 << "(=> " << *r.name << " (= (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -6370,7 +6107,7 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
             constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         } else {
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (= (+ ";
+            trivial_encoding_constraints << "(=> " << *r.name << " (= (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -6405,7 +6142,7 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
         if(export_proof){
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
-            if(is2step)
+            if(vars.size() > 3)
                 constraints2step2 << "(= r 0)\n)\n";
         }
 
@@ -6526,7 +6263,7 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, false, c-1)});
     if(export_proof){
         string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(=> (= " << *r.name << " 1) " 
+        constraints2step2 << "(=> " << *r.name << " " 
                                 " (= " << *sub_var1->name << " " << c_string << ")\n)\n";
 
     }   
@@ -6598,7 +6335,7 @@ void Encoder::encode_int_lin_le(const ArrayLiteral& coefs, const ArrayLiteral &v
     }
 
     if(c < sum1){
-        if(export_proof && is2step)
+        if(export_proof && vars.size() > 3)
             constraints2step2 << "false\n)\n";
 
         declare_unsat(cnf_clauses);
@@ -6606,7 +6343,7 @@ void Encoder::encode_int_lin_le(const ArrayLiteral& coefs, const ArrayLiteral &v
     }    
 
     if(c > sum2){
-        if(export_proof && is2step){
+        if(export_proof && vars.size() > 3){
             constraints2step2 << "true\n)\n";
             auto var = get_var_from_array(vars, 0);
 
@@ -6771,7 +6508,8 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
         if(export_proof){
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
-            constraints2step2 << "(= r 0)\n)\n";
+            if(vars.size() > 3)
+                constraints2step2 << "(= r 0)\n)\n";
         }
 
         return ;
@@ -6783,7 +6521,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
         if(export_proof){
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0)});
 
-            if(is2step)
+            if(vars.size() > 3)
                 constraints2step2 << "(= r 1)\n)\n";
         }
 
@@ -6898,7 +6636,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
     if(export_proof){
         string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
         constraints2step2 << "(= " << *r.name << 
-                                " (ite (<= " << *sub_var1->name << " " << c_string << ") 1 0))\n";
+                                " (<= " << *sub_var1->name << " " << c_string << "))\n";
 
     }   
     
@@ -6925,7 +6663,7 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
             constraint2step_set.insert(next_constraint_num);
 
             constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-            constraints2step1 << "(=> (= " << *r.name << " 1) (<= (+ ";
+            constraints2step1 << "(=> " << *r.name << " (<= (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -6940,7 +6678,7 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
             constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         } else {
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (<= (+ ";
+            trivial_encoding_constraints << "(=> " << *r.name << " (<= (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -6975,7 +6713,8 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
         if(export_proof){
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
-            constraints2step2 << "(= r 0)\n)\n";
+            if(vars.size() > 3)
+                constraints2step2 << "(= r 0)\n)\n";
         }
 
         return ;
@@ -6989,7 +6728,7 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0),
                                    make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
-            if(is2step)
+            if(vars.size() > 3)
                 constraints2step2 << "true\n)\n";
         }
 
@@ -7101,7 +6840,7 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
     if(export_proof){
         string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(=> (= " << *r.name << " 1) " 
+        constraints2step2 << "(=> " << *r.name << " " 
                                 " (<= " << *sub_var1->name << " " << c_string << ")\n)\n";
 
     }   
@@ -7171,7 +6910,7 @@ void Encoder::encode_int_lin_ne(const ArrayLiteral& coefs, const ArrayLiteral &v
         }
     }
     if(c < sum1 || c > sum2){
-        if(export_proof && is2step){
+        if(export_proof && vars.size() > 3){
             constraints2step2 << "true\n)\n";
             auto var = get_var_from_array(vars, 0);
 
@@ -7445,7 +7184,7 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
         if(export_proof){
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0)});
 
-            if(is2step)
+            if(vars.size() > 3)
                 constraints2step2 << "(= r 1)\n)\n";
         }
 
@@ -7637,7 +7376,7 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
     if(export_proof){
         string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
         constraints2step2 << "(= " << *r.name << 
-                                " (ite (distinct " << *sub_var1->name << " " << c_string << ") 1 0))\n";
+                                " (distinct " << *sub_var1->name << " " << c_string << "))\n";
     }   
     
     reify(temp_clauses, r, cnf_clauses);
@@ -7660,7 +7399,7 @@ void Encoder::encode_int_lin_ne_imp(const ArrayLiteral& coefs, const ArrayLitera
             constraint2step_set.insert(next_constraint_num);
 
             constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-            constraints2step1 << "(=> (= " << *r.name << " 1) (distinct (+ ";
+            constraints2step1 << "(=> " << *r.name << " (distinct (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -7675,7 +7414,7 @@ void Encoder::encode_int_lin_ne_imp(const ArrayLiteral& coefs, const ArrayLitera
             constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         } else {
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (distinct (+ ";
+            trivial_encoding_constraints << "(=> " << *r.name << " (distinct (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -7879,7 +7618,7 @@ void Encoder::encode_int_lin_ne_imp(const ArrayLiteral& coefs, const ArrayLitera
                             make_literal(LiteralType::ORDER, sub_var1->id, false, c)});
     if(export_proof){
         string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(=> (= " << *r.name << " 1)"
+        constraints2step2 << "(=> " << *r.name <<
                                 " (distinct " << *sub_var1->name << " " << c_string << "))\n";
     }   
     
@@ -7955,7 +7694,7 @@ void Encoder::encode_int_lt_imp(const BasicVar& a, const BasicVar& b, const Basi
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (< " << *a.name << " " 
+        trivial_encoding_constraints << "(=> " << *r.name << " (< " << *a.name << " " 
                                      << *b.name << "))\n)\n";
     }
 
@@ -8577,7 +8316,7 @@ void Encoder::encode_int_ne_imp(const BasicVar& a, const BasicVar& b, const Basi
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (distinct " << *a.name << " " << *b.name 
+        trivial_encoding_constraints << "(=> " << *r.name << " (distinct " << *a.name << " " << *b.name 
                                      << "))\n)\n"; 
     }
 
@@ -8960,7 +8699,7 @@ void Encoder::encode_set_in(const BasicVar& x, const BasicLiteralExpr& S1, CNF &
         }
         if(elems.size() > 1)
             trivial_encoding_constraints << ")";
-        trivial_encoding_constraints << "\n)\n";
+        trivial_encoding_constraints << "\n)\n)\n";
     }
 
     if(left > elems[elems.size() - 1] || right < elems[0]){
@@ -9009,10 +8748,8 @@ void Encoder::encode_array_bool_and(const ArrayLiteral& as, const BasicVar& r, C
 
         smt_constraints_vars.push_back({*r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (= " << as.size() << " (+ ";
+        trivial_encoding_constraints << "(= " << *r.name << " (and ";
 
         for(int i = 0; i < (int)as.size(); i++){
             auto var = get_var_from_array(as, i);
@@ -9021,7 +8758,7 @@ void Encoder::encode_array_bool_and(const ArrayLiteral& as, const BasicVar& r, C
             smt_constraints_vars.back().insert(*var->name);
         }
 
-        trivial_encoding_constraints << ")) 1 0))\n)\n";
+        trivial_encoding_constraints << "))\n)\n";
         
     }
 
@@ -9068,10 +8805,10 @@ void Encoder::encode_array_bool_element(const BasicVar& b, const ArrayLiteral& a
         trivial_encoding_constraints << "(= " << *c.name << "\n";
         for(int i = 0; i < (int)as.size(); i++){
             auto elem = get_bool_from_array(as, i);
-            string elem_string = (elem == false) ? "0" : "1";
+            string elem_string = elem ? "true" : "false";
             trivial_encoding_constraints << "(ite (= " << *b.name << " " << i + 1 << ") " << elem_string << "\n";
         }
-        trivial_encoding_constraints << "-1" << endl;
+        trivial_encoding_constraints << "false" << endl;
         for(int i = 0; i < (int)as.size() + 2; i++)
             trivial_encoding_constraints << ")";
         
@@ -9134,10 +8871,8 @@ void Encoder::encode_array_bool_or(const ArrayLiteral& as, const BasicVar& r, CN
 
         smt_constraints_vars.push_back({*r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (<= 1 (+ ";
+        trivial_encoding_constraints << "(= " << *r.name << " (or ";
 
         for(int i = 0; i < (int)as.size(); i++){
             auto var = get_var_from_array(as, i);
@@ -9146,7 +8881,7 @@ void Encoder::encode_array_bool_or(const ArrayLiteral& as, const BasicVar& r, CN
             smt_constraints_vars.back().insert(*var->name);
         }
 
-        trivial_encoding_constraints << ")) 1 0))\n)\n";
+        trivial_encoding_constraints << "))\n)\n";
         
     }
 
@@ -9178,7 +8913,7 @@ void Encoder::encode_array_bool_or(const ArrayLiteral& as, const BasicVar& r, CN
 void Encoder::encode_array_bool_xor(const ArrayLiteral& as, CNF& cnf_clauses){
     
 
-    if(export_proof){
+    if(export_proof && as.size() != 2){
 
         smt_constraints_vars.push_back({});
 
@@ -9192,7 +8927,7 @@ void Encoder::encode_array_bool_xor(const ArrayLiteral& as, CNF& cnf_clauses){
 
             for(int i = 0; i < (int)as.size(); i++){
                 auto var = get_var_from_array(as, i);
-                trivial_encoding_constraints << *var->name  << " ";
+                trivial_encoding_constraints << "(ite " << *var->name  << " 1 0) ";
 
                 smt_constraints_vars.back().insert(*var->name);
             }
@@ -9314,11 +9049,11 @@ void Encoder::encode_array_var_bool_element(const BasicVar& b, const ArrayLitera
         
             smt_constraints_vars.back().insert(*var->name);
         }
-        trivial_encoding_constraints << "-1" << endl;
+        trivial_encoding_constraints << "false" << endl;
         for(int i = 0; i < (int)as.size() + 2; i++)
             trivial_encoding_constraints << ")";
         
-        trivial_encoding_constraints << ")\n";
+        trivial_encoding_constraints << ")\n)\n";
     }
 
     int b_left = get_left(&b);
@@ -9386,7 +9121,7 @@ void Encoder::encode_bool2int(const BasicVar& a, const BasicVar& b, CNF& cnf_cla
         isLIA = true;
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *a.name << " " << *b.name << ")\n)\n";
+        trivial_encoding_constraints << "(= " << *b.name << " (ite " << *a.name << " 1 0))\n)\n";
     }
 
     int b_left = get_left(&b);
@@ -9481,11 +9216,8 @@ void Encoder::encode_bool_and(const BasicVar& a, const BasicVar& b, const BasicV
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isNIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (* " << *a.name <<  " " <<
-                                        *b.name << ")\n)\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " (and " << *a.name << " " << *b.name << "))\n)\n";
     }    
     
     LiteralPtr yes_a = make_literal(LiteralType::BOOL_VARIABLE, a.id, true, 0);
@@ -9514,10 +9246,8 @@ void Encoder::encode_bool_clause(const ArrayLiteral& as, const ArrayLiteral &bs,
 
         smt_constraints_vars.push_back({});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(<= 1 (+ ";
+        trivial_encoding_constraints << "(or ";
 
         for(int i = 0; i < (int)as.size(); i++){
             auto var = get_var_from_array(as, i);
@@ -9528,12 +9258,12 @@ void Encoder::encode_bool_clause(const ArrayLiteral& as, const ArrayLiteral &bs,
 
         for(int i = 0; i < (int)bs.size(); i++){
             auto var = get_var_from_array(bs, i);
-            trivial_encoding_constraints << "(- 1 " << *var->name << ") ";
+            trivial_encoding_constraints << "(not " << *var->name << ") ";
 
             smt_constraints_vars.back().insert(*var->name);
         }
 
-        trivial_encoding_constraints << "))\n)\n";
+        trivial_encoding_constraints << ")\n)\n";
         
     }
 
@@ -9595,11 +9325,8 @@ void Encoder::encode_bool_eq_reif(const BasicVar &a, const BasicVar& b, const Ba
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (= " << *a.name <<  " " <<
-                                        *b.name << ") 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " (= " << *a.name << " " << *b.name << "))\n)\n";
     }    
     
     LiteralPtr yes_a = make_literal(LiteralType::BOOL_VARIABLE, a.id, true, 0);
@@ -9631,10 +9358,8 @@ void Encoder::encode_bool_eq_imp(const BasicVar &a, const BasicVar& b, const Bas
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (= " << *a.name <<  " " <<
+        trivial_encoding_constraints << "(=> " << *r.name << " (= " << *a.name <<  " " <<
                                         *b.name << "))\n)\n";
     }        
     
@@ -9660,10 +9385,8 @@ void Encoder::encode_bool_le(const BasicVar &a, const BasicVar& b, CNF &cnf_clau
 
         smt_constraints_vars.push_back({*a.name, *b.name});
         
-        isLIA = true;
-    
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(<= " << *a.name << " " << *b.name << ")\n)\n";
+        trivial_encoding_constraints << "(=> " << *a.name << " " << *b.name << ")\n)\n";
     }
 
     LiteralPtr yes_b = make_literal(LiteralType::BOOL_VARIABLE, b.id, true, 0);
@@ -9683,11 +9406,8 @@ void Encoder::encode_bool_le_reif(const BasicVar &a, const BasicVar& b, const Ba
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (<= " << *a.name <<  " " <<
-                                        *b.name << ") 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " (=> " << *a.name << " " << *b.name << "))\n)\n";
     }    
     
     LiteralPtr yes_a = make_literal(LiteralType::BOOL_VARIABLE, a.id, true, 0);
@@ -9716,10 +9436,8 @@ void Encoder::encode_bool_le_imp(const BasicVar &a, const BasicVar& b, const Bas
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (<= " << *a.name <<  " " <<
+        trivial_encoding_constraints << "(=> " << *r.name << " (=> " << *a.name <<  " " <<
                                         *b.name << "))\n)\n";
     }   
 
@@ -9742,15 +9460,18 @@ void Encoder::encode_bool_substitution(const BasicVar &x, const BasicVar &x1, in
         string coef1_string = coef1 < 0 ? ("(- " + to_string(-coef1) + ")") : to_string(coef1);
         string coef2_string = coef2 < 0 ? ("(- " + to_string(-coef2) + ")") : to_string(coef2);
         
-        connection2step << "(= " << *x.name << " (+ (* " << coef1_string << " " << *x1.name << ") (* "
-                        << coef2_string << " " << *x2.name << ")))\n";
+        string x1_term = holds_alternative<BasicParType>(*x1.type) ? "(ite " + *x1.name + " 1 0)" : *x1.name;
+        string x2_term = "(ite " + *x2.name + " 1 0)";
+
+        connection2step << "(= " << *x.name << " (+ (* " << coef1_string << " " << x1_term << ") (* "
+                        << coef2_string << " " << x2_term << ")))\n";
         connection2step << "---" << endl;
-        constraints2step2 << "(= " << *x.name << " (+ (* " << coef1_string << " " << *x1.name << ") (* "
-                          << coef2_string << " " << *x2.name << ")))\n";
+        constraints2step2 << "(= " << *x.name << " (+ (* " << coef1_string << " " << x1_term << ") (* "
+                          << coef2_string << " " << x2_term << ")))\n";
 
         smt_step1_funs << "(define-fun f_" << *x.name<< " () Int\n";
-        smt_step1_funs << "(+ (* " << coef1_string << " " << *x1.name << ") (* "
-                          << coef2_string << " " << *x2.name << "))\n)\n";    
+        smt_step1_funs << "(+ (* " << coef1_string << " " << x1_term << ") (* "
+                          << coef2_string << " " << x2_term << "))\n)\n";    
                           
         left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
 
@@ -9837,7 +9558,7 @@ void Encoder::encode_bool_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &
             int coef = get_int_from_array(coefs, i);
             string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
             auto var = get_var_from_array(vars, i);
-            constraints2step1 << "(* " << coef_string << " " << *var->name << ") ";
+            constraints2step1 << "(* " << coef_string << " (ite " << *var->name << " 1 0)) ";
 
             smt_constraints_vars.back().insert(*var->name);
         }
@@ -9873,7 +9594,7 @@ void Encoder::encode_bool_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &
             cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, var->id, false, 0)}); 
             if(export_proof){
                 if(is2step)
-                    constraints2step2 << "(= " << *var->name << " 0)\n)\n";
+                    constraints2step2 << "(not " << *var->name << ")\n)\n";
                 sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, var->id, false, 0)});
             }
         } else if(c == coef) {
@@ -9881,7 +9602,7 @@ void Encoder::encode_bool_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &
             if(export_proof){
                 sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, var->id, true, 0)});
                 if(is2step)
-                    constraints2step2 << "(= " << *var->name << " 1)\n)\n";
+                    constraints2step2 << *var->name << "\n)\n";
             }
         } else {
             if(is2step)
@@ -9976,7 +9697,7 @@ void Encoder::encode_bool_lin_le(const ArrayLiteral& coefs, const ArrayLiteral &
             int coef = get_int_from_array(coefs, i);
             string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
             auto var = get_var_from_array(vars, i);
-            constraints2step1 << "(* " << coef_string << " " << *var->name << ") ";
+            constraints2step1 << "(* " << coef_string << " (ite " << *var->name << " 1 0)) ";
 
             smt_constraints_vars.back().insert(*var->name);
         }
@@ -10027,7 +9748,7 @@ void Encoder::encode_bool_lin_le(const ArrayLiteral& coefs, const ArrayLiteral &
             if(export_proof){
                 sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, var->id, false, 0)});
                 if(is2step)
-                    constraints2step2 << "(= " << *var->name << " 0)\n)\n";
+                    constraints2step2 << "(not " << *var->name << ")\n)\n";
             }
         } else {
             if(is2step)
@@ -10107,10 +9828,8 @@ void Encoder::encode_bool_lt(const BasicVar &a, const BasicVar& b, CNF &cnf_clau
 
         smt_constraints_vars.push_back({*a.name, *b.name});
         
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(< " << *a.name << " " << *b.name << ")\n)\n";
+        trivial_encoding_constraints << "(and (not " << *a.name << ") " << *b.name << ")\n)\n";
     }    
     
     LiteralPtr yes_b = make_literal(LiteralType::BOOL_VARIABLE, b.id, true, 0);
@@ -10135,11 +9854,8 @@ void Encoder::encode_bool_lt_reif(const BasicVar &a, const BasicVar& b, const Ba
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (< " << *a.name <<  " " <<
-                                        *b.name << ") 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " (and (not " << *a.name << ") " << *b.name << "))\n)\n";
     }
 
     LiteralPtr yes_a = make_literal(LiteralType::BOOL_VARIABLE, a.id, true, 0);
@@ -10167,11 +9883,8 @@ void Encoder::encode_bool_lt_imp(const BasicVar &a, const BasicVar& b, const Bas
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (< " << *a.name <<  " " <<
-                                        *b.name << "))\n)\n";
+        trivial_encoding_constraints << "(=> " << *r.name << " (and (not " << *a.name << ") " << *b.name << "))\n)\n";
     }
 
     LiteralPtr yes_b = make_literal(LiteralType::BOOL_VARIABLE, b.id, true, 0);
@@ -10193,8 +9906,6 @@ void Encoder::encode_bool_not(const BasicVar &a, const BasicVar& b, CNF &cnf_cla
     if(export_proof){
         
         smt_constraints_vars.push_back({*a.name, *b.name});
-
-        isLIA = true;
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         trivial_encoding_constraints << "(distinct " << *a.name << " " << *b.name << ")\n)\n";
@@ -10222,11 +9933,8 @@ void Encoder::encode_bool_or(const BasicVar &a, const BasicVar& b, const BasicVa
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (> " << *a.name <<  " " <<
-                                        *b.name << ") " << *a.name << " " << *b.name << ")\n)\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " (or " << *a.name << " " << *b.name << "))\n)\n";
     }    
     
     LiteralPtr yes_a = make_literal(LiteralType::BOOL_VARIABLE, a.id, true, 0);
@@ -10255,11 +9963,8 @@ void Encoder::encode_bool_xor(const BasicVar &a, const BasicVar& b, const BasicV
 
         smt_constraints_vars.push_back({*a.name, *b.name, *r.name});
 
-        isLIA = true;
-
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (distinct " << *a.name <<  " " <<
-                                        *b.name << ") 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " (distinct " << *a.name << " " << *b.name << "))\n)\n";
     }
     
     LiteralPtr yes_a = make_literal(LiteralType::BOOL_VARIABLE, a.id, true, 0);
@@ -10289,8 +9994,6 @@ void Encoder::encode_bool_xor(const BasicVar &a, const BasicVar& b, CNF &cnf_cla
 
         smt_constraints_vars.push_back({*a.name, *b.name});
         
-        isLIA = true;
-     
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         trivial_encoding_constraints << "(distinct " << *a.name << " " << *b.name << ")\n)\n";
     }
@@ -10316,17 +10019,39 @@ bool Encoder::check_if_val_in_domain(const vector<int>& elems, int val){
     return binary_search(elems.begin(), elems.end(), val);
 }
 
+static bool contains_elem(const vector<int>& elems, int elem){
+    return binary_search(elems.begin(), elems.end(), elem);
+}
+
+static vector<int> union_elems(const vector<int>& a, const vector<int>& b){
+    vector<int> result;
+    set_union(a.begin(), a.end(), b.begin(), b.end(), back_inserter(result));
+    return result;
+}
+
+static vector<int> union_elems(const vector<int>& a, const vector<int>& b, const vector<int>& c){
+    return union_elems(union_elems(a, b), c);
+}
+
+static string set_bool_term(const BasicVar& set_var, const vector<int>& elems, int elem){
+    return contains_elem(elems, elem) ? set_elem_smt_name(set_var, elem) : "false";
+}
+
+static string bool_to_int(const string& term){
+    return "(ite " + term + " 1 0)";
+}
+
 // TODO 
 // Encodes a constraint of type as[b] = c
 void Encoder::encode_array_set_element(const BasicVar& b, const ArrayLiteral& as, const BasicVar& c, CNF& cnf_clauses){
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*b.name, *c.name});
+        smt_constraints_vars.push_back({*b.name});
 
         isLIA = true;
 
-        auto set_literal_to_bv = [&](const SetLiteral& set_lit){
+        auto set_literal_elems = [&](const SetLiteral& set_lit){
             vector<int> elems;
             if(holds_alternative<SetSetLiteral*>(set_lit)){
                 elems = *get<SetSetLiteral*>(set_lit)->elems;
@@ -10336,31 +10061,30 @@ void Encoder::encode_array_set_element(const BasicVar& b, const ArrayLiteral& as
                 for(int val = left; val <= right; val++)
                     elems.push_back(val);
             }
-
-            string bv = "#b";
-            int j = (int)elems.size() - 1;
-            for(int val = bv_right; val >= bv_left; val--){
-                while(j >= 0 && elems[j] > val)
-                    j--;
-                bv += (j >= 0 && elems[j] == val) ? '1' : '0';
-            }
-            return bv;
+            return elems;
         };
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         trivial_encoding_constraints << "(and\n";
         trivial_encoding_constraints << "(<= 1 " << *b.name << " " << as.size() << ")\n";
 
-        trivial_encoding_constraints << "(= " << *c.name << "\n";
-        for(int i = 0; i < (int)as.size(); i++)
-            trivial_encoding_constraints << "(ite (= " << *b.name << " " << i + 1 << ") "
-                                         << set_literal_to_bv(*get_set_from_array(as, i)) << "\n";
+        auto cs = *get_set_elems(c);
+        for(int elem : cs){
+            smt_constraints_vars.back().insert(set_elem_smt_name(c, elem));
+            trivial_encoding_constraints << "(= " << set_elem_smt_name(c, elem) << "\n";
+            for(int i = 0; i < (int)as.size(); i++){
+                auto elems = set_literal_elems(*get_set_from_array(as, i));
+                trivial_encoding_constraints << "(ite (= " << *b.name << " " << i + 1 << ") "
+                                             << (contains_elem(elems, elem) ? "true" : "false") << "\n";
+            }
 
-        trivial_encoding_constraints << "(bvnot " << *c.name << ")" << endl;
-        for(int i = 0; i < (int)as.size() + 2; i++)
-            trivial_encoding_constraints << ")";
+            trivial_encoding_constraints << "false" << endl;
+            for(int i = 0; i < (int)as.size() + 1; i++)
+                trivial_encoding_constraints << ")";
+            trivial_encoding_constraints << "\n";
+        }
 
-        trivial_encoding_constraints << "\n)\n";
+        trivial_encoding_constraints << "\n)\n)\n";
         
     }
 
@@ -10461,25 +10185,33 @@ void Encoder::encode_array_var_set_element(const BasicVar& b, const ArrayLiteral
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*b.name, *c.name});
+        smt_constraints_vars.push_back({*b.name});
 
         isLIA = true;
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         trivial_encoding_constraints << "(and\n";
         trivial_encoding_constraints << "(<= 1 " << *b.name << " " << as.size() << ")\n";
-        trivial_encoding_constraints << "(= " << *c.name << "\n";
-        for(int i = 0; i < (int)as.size(); i++){
-            auto var = get_var_from_array(as, i);
-            smt_constraints_vars.back().insert(*var->name);
-            trivial_encoding_constraints << "(ite (= " << *b.name << " " << i + 1 << ") " << *var->name << "\n";
-        }
+        auto cs = *get_set_elems(c);
+        for(int elem : cs){
+            smt_constraints_vars.back().insert(set_elem_smt_name(c, elem));
+            trivial_encoding_constraints << "(= " << set_elem_smt_name(c, elem) << "\n";
+            for(int i = 0; i < (int)as.size(); i++){
+                auto var = get_var_from_array(as, i);
+                auto elems = *get_set_elems(*var);
+                string term = set_bool_term(*var, elems, elem);
+                if(term != "false")
+                    smt_constraints_vars.back().insert(term);
+                trivial_encoding_constraints << "(ite (= " << *b.name << " " << i + 1 << ") " << term << "\n";
+            }
 
-        trivial_encoding_constraints << "(bvneg " << *c.name << ")" << endl;
-        for(int i = 0; i < (int)as.size() + 2; i++)
-            trivial_encoding_constraints << ")";
+            trivial_encoding_constraints << "false" << endl;
+            for(int i = 0; i < (int)as.size() + 1; i++)
+                trivial_encoding_constraints << ")";
+            trivial_encoding_constraints << "\n";
+        }
         
-        trivial_encoding_constraints << ")\n";
+        trivial_encoding_constraints << ")\n)\n";
     }
 
     int b_left = get_left(&b);
@@ -10543,37 +10275,34 @@ void Encoder::encode_set_substitution(const BasicVar &x, const BasicVar &x1, int
         smt_constraints_vars.back().insert(*x.name);
         smt_constraints_vars.back().insert(*x1.name);
 
-        connection2step_vars.back().insert({*x.name, *x1.name, *S.name});
-        connection2step_vars.push_back({});
+            connection2step_vars.back().insert({*x.name, *x1.name, set_elem_smt_name(S, val1), set_elem_smt_name(S, val2)});
+            connection2step_vars.push_back({});
 
         if(x1.id == x.id){
-            connection2step << "(= " << *x.name << " (+ (bv2nat ((_ extract " << val1 - bv_left << " " 
-                            << val1 - bv_left << ") " << *S.name << ")) (bv2nat ((_ extract "
-                            << val2 - bv_left << " " << val2 - bv_left << ") " << *S.name << "))))\n";
+            connection2step << "(= " << *x.name << " (+ " << bool_to_int(set_elem_smt_name(S, val1))
+                            << " " << bool_to_int(set_elem_smt_name(S, val2)) << "))\n";
             connection2step << "---" << endl;
                         
-            constraints2step2 << "(= " << *x.name << " (+ (bv2nat ((_ extract " << val1 - bv_left << " " 
-                            << val1 - bv_left << ") " << *S.name << ")) (bv2nat ((_ extract "
-                            << val2 - bv_left << " " << val2 - bv_left << ") " << *S.name << "))))\n";
+            constraints2step2 << "(= " << *x.name << " (+ " << bool_to_int(set_elem_smt_name(S, val1))
+                            << " " << bool_to_int(set_elem_smt_name(S, val2)) << "))\n";
     
             smt_step1_funs << "(define-fun f_" << *x.name<< " () Int\n";
-            smt_step1_funs << " (+ (bv2nat ((_ extract " << val1 - bv_left << " " 
-                            << val1 - bv_left << ") " << *S.name << ")) (bv2nat ((_ extract "
-                            << val2 - bv_left << " " << val2 - bv_left << ") " << *S.name << ")))\n)\n";
+            smt_step1_funs << " (+ " << bool_to_int(set_elem_smt_name(S, val1))
+                           << " " << bool_to_int(set_elem_smt_name(S, val2)) << ")\n)\n";
       
                             
             left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
         } else {
-            connection2step << "(= " << *x.name << " (+ " << *x1.name << " (bv2nat ((_ extract "
-                            << val2 - bv_left << " " << val2 - bv_left << ") " << *S.name << "))))\n";
+            connection2step << "(= " << *x.name << " (+ " << *x1.name << " "
+                            << bool_to_int(set_elem_smt_name(S, val2)) << "))\n";
             connection2step << "---" << endl;
                         
-            constraints2step2 << "(= " << *x.name << " (+ " << *x1.name << " (bv2nat ((_ extract "
-                            << val2 - bv_left << " " << val2 - bv_left << ") " << *S.name << "))))\n";
+            constraints2step2 << "(= " << *x.name << " (+ " << *x1.name << " "
+                            << bool_to_int(set_elem_smt_name(S, val2)) << "))\n";
     
             smt_step1_funs << "(define-fun f_" << *x.name<< " () Int\n";
-            smt_step1_funs << "(+ " << *x1.name << " (bv2nat ((_ extract "
-                            << val2 - bv_left << " " << val2 - bv_left << ") " << *S.name << ")))\n)\n";
+            smt_step1_funs << "(+ " << *x1.name << " "
+                           << bool_to_int(set_elem_smt_name(S, val2)) << ")\n)\n";
      
                             
             left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
@@ -10647,9 +10376,20 @@ void Encoder::encode_set_card(const BasicVar& S, const BasicVar& x, CNF& cnf_cla
     int right = get_right(&x);
 
     if(export_proof){
-        needOnes = true;
+        smt_constraints_vars.push_back({*x.name});
+        for(int elem : elems)
+            smt_constraints_vars.back().insert(set_elem_smt_name(S, elem));
 
-        smt_constraints_vars.push_back({*S.name, *x.name});
+        auto card_sum = [&](){
+            if(elems.empty())
+                return string("0");
+            string res = "(+";
+            for(int elem : elems)
+                res += " " + bool_to_int(set_elem_smt_name(S, elem));
+            res += ")";
+            return res;
+        };
+
         if(elems.size() > 1){
 
             is2step = true;
@@ -10657,14 +10397,14 @@ void Encoder::encode_set_card(const BasicVar& S, const BasicVar& x, CNF& cnf_cla
             constraint2step_set.insert(next_constraint_num);
 
             constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-            constraints2step1 << "(= " << *x.name << " (ones " << *S.name << "))\n)\n";
+            constraints2step1 << "(= " << *x.name << " " << card_sum() << ")\n)\n";
 
             constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
             constraints2step2 << "(and\n";
         } else {
 
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *x.name << " (ones " << *S.name << "))\n)\n";            
+            trivial_encoding_constraints << "(= " << *x.name << " " << card_sum() << ")\n)\n";            
         }
     }
 
@@ -10795,15 +10535,54 @@ void Encoder::encode_set_card(const BasicVar& S, const BasicVar& x, CNF& cnf_cla
     }
 }
 
+static void write_set_binary_formula(ostream& os, const BasicVar& x, const vector<int>& xs,
+                                     const BasicVar& y, const vector<int>& ys,
+                                     const BasicVar& r, const vector<int>& rs,
+                                     const string& op){
+    auto elems = union_elems(xs, ys, rs);
+    if(elems.empty()){
+        os << "true";
+        return;
+    }
+
+    os << "(and\n";
+    for(int elem : elems){
+        string x_term = set_bool_term(x, xs, elem);
+        string y_term = set_bool_term(y, ys, elem);
+        string r_term = set_bool_term(r, rs, elem);
+        if(op == "union")
+            os << "(= " << r_term << " (or " << x_term << " " << y_term << "))\n";
+        else if(op == "intersect")
+            os << "(= " << r_term << " (and " << x_term << " " << y_term << "))\n";
+        else if(op == "diff")
+            os << "(= " << r_term << " (and " << x_term << " (not " << y_term << ")))\n";
+        else if(op == "symdiff")
+            os << "(= " << r_term << " (distinct " << x_term << " " << y_term << "))\n";
+    }
+    os << ")";
+}
+
 // Encodes a constraint of type r = x \ y
 void Encoder::encode_set_diff(const BasicVar& x, const BasicVar& y, const BasicVar& r, CNF &cnf_clauses){
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        auto rs = *get_set_elems(r);
+        smt_constraints_vars.push_back({});
+        for(int elem : union_elems(xs, ys, rs)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+            if(contains_elem(rs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(r, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (bvand " << *x.name << " (bvnot " << *y.name << ")))\n)\n";
+        write_set_binary_formula(trivial_encoding_constraints, x, xs, y, ys, r, rs, "diff");
+        trivial_encoding_constraints << "\n)\n";
     }
 
     int i = 0, j = 0;
@@ -10912,15 +10691,38 @@ void Encoder::encode_set_diff(const BasicVar& x, const BasicVar& y, const BasicV
 
 }
 
+static void write_set_eq_formula(ostream& os, const BasicVar& x, const vector<int>& xs,
+                                 const BasicVar& y, const vector<int>& ys){
+    auto elems = union_elems(xs, ys);
+    if(elems.empty()){
+        os << "true";
+        return;
+    }
+
+    os << "(and\n";
+    for(int elem : elems)
+        os << "(= " << set_bool_term(x, xs, elem) << " " << set_bool_term(y, ys, elem) << ")\n";
+    os << ")";
+}
+
 // Encodes a constraint of type x = y
 void Encoder::encode_set_eq(const BasicVar& x, const BasicVar& y, CNF &cnf_clauses){
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *x.name << " " << *y.name << ")\n)\n";
+        write_set_eq_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << "\n)\n";
     }
 
     int i = 0, j = 0;
@@ -10980,11 +10782,20 @@ void Encoder::encode_set_eq_reif(const BasicVar& x, const BasicVar& y, const Bas
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({*r.name});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (= " 
-                                     << *x.name << " " << *y.name << ") 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " ";
+        write_set_eq_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << ")\n)\n";
     }
 
     CNF temp_clauses;
@@ -11004,11 +10815,20 @@ void Encoder::encode_set_eq_imp(const BasicVar& x, const BasicVar& y, const Basi
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({*r.name});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (= " 
-                                     << *x.name << " " << *y.name << "))\n)\n";
+        trivial_encoding_constraints << "(=> " << *r.name << " ";
+        write_set_eq_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << ")\n)\n";
     }
 
     CNF temp_clauses;
@@ -11072,7 +10892,7 @@ void Encoder::encode_set_in(const BasicVar& x, const BasicVar& S, CNF &cnf_claus
         sat_constraint_clauses.push_back(helpers);
     }
     if(export_proof){
-        set_in_pairs.push_back({*x.name, *S.name});
+        set_in_pairs.push_back({*x.name, *S.name, elems});
     }
 }
 
@@ -11100,15 +10920,15 @@ void Encoder::encode_set_in_reif(const BasicVar& x, const BasicLiteralExpr& S1, 
         smt_constraints_vars.push_back({*x.name, *r.name});
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite ";
+        trivial_encoding_constraints << "(= " << *r.name << " ";
         if(elems.size() > 1)
             trivial_encoding_constraints << "(or ";
         for(auto elem : elems){
-            trivial_encoding_constraints << "(= " << *x.name << " " << elem << ") ";
+            trivial_encoding_constraints << "(= " << *x.name << " " << smt_int(elem) << ") ";
         }
         if(elems.size() > 1)
             trivial_encoding_constraints << ")";
-        trivial_encoding_constraints << " 1 0))\n)\n";
+        trivial_encoding_constraints << ")\n)\n";
     }
 
     if(left > elems[elems.size() - 1] || right < elems[0]){
@@ -11184,7 +11004,7 @@ void Encoder::encode_set_in_reif(const BasicVar& x, const BasicVar& S, const Bas
 
     if(left > elems[elems.size() - 1] || right < elems[0]){
 
-        smt_constraints_vars.push_back({*x.name, *S.name, *r.name});
+        smt_constraints_vars.push_back({*x.name, *r.name});
 
         cnf_clauses.push_back({not_r});
 
@@ -11192,7 +11012,7 @@ void Encoder::encode_set_in_reif(const BasicVar& x, const BasicVar& S, const Bas
             sat_constraint_clauses.push_back({not_r});
 
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " 0)\n)\n";
+            trivial_encoding_constraints << "(not " << *r.name << ")\n)\n";
         }
         return ;
     }
@@ -11260,8 +11080,8 @@ void Encoder::encode_set_in_reif(const BasicVar& x, const BasicVar& S, const Bas
     reify(temp_clauses, r, cnf_clauses);
 
     if(export_proof){
-        set_in_reif_pairs.push_back({*x.name, *S.name, *r.name});
-    }
+        set_in_reif_pairs.push_back({*x.name, *S.name, *r.name, elems});
+    }    
 
 }
 
@@ -11290,7 +11110,7 @@ void Encoder::encode_set_in_imp(const BasicVar& x, const BasicLiteralExpr& S1, c
         smt_constraints_vars.push_back({*x.name, *r.name});
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) ";
+        trivial_encoding_constraints << "(=> " << *r.name << " ";
         if(elems.size() > 1)
             trivial_encoding_constraints << "(or ";
         for(auto elem : elems){
@@ -11376,11 +11196,11 @@ void Encoder::encode_set_in_imp(const BasicVar& x, const BasicVar& S, const Basi
 
         if(export_proof){
 
-            smt_constraints_vars.push_back({*x.name, *S.name, *r.name});
+            smt_constraints_vars.push_back({*x.name, *r.name});
             sat_constraint_clauses.push_back({not_r});
 
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " 0)\n)\n";
+            trivial_encoding_constraints << "(not " << *r.name << ")\n)\n";
         }
         return ;
     }
@@ -11448,8 +11268,22 @@ void Encoder::encode_set_in_imp(const BasicVar& x, const BasicVar& S, const Basi
     impify(temp_clauses, r, cnf_clauses);
 
     if(export_proof){
-        set_in_imp_pairs.push_back({*x.name, *S.name, *r.name});
+        set_in_imp_pairs.push_back({*x.name, *S.name, *r.name, elems});
+    }     
+}
+
+static void write_set_ne_formula(ostream& os, const BasicVar& x, const vector<int>& xs,
+                                 const BasicVar& y, const vector<int>& ys){
+    auto elems = union_elems(xs, ys);
+    if(elems.empty()){
+        os << "false";
+        return;
     }
+
+    os << "(or\n";
+    for(int elem : elems)
+        os << "(distinct " << set_bool_term(x, xs, elem) << " " << set_bool_term(y, ys, elem) << ")\n";
+    os << ")";
 }
 
 // Encodes a constraint of type x =/= y
@@ -11457,10 +11291,19 @@ void Encoder::encode_set_ne(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
     
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(distinct " << *x.name << " " << *y.name << ")\n)\n";
+        write_set_ne_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << "\n)\n";
     }
     
     int i = 0, j = 0;
@@ -11523,11 +11366,20 @@ void Encoder::encode_set_ne(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
 void Encoder::encode_set_ne_reif(const BasicVar& x, const BasicVar& y, const BasicVar& r,CNF &cnf_clauses){
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({*r.name});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (distinct " 
-                                     << *x.name << " " << *y.name << ") 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " ";
+        write_set_ne_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << ")\n)\n";
     }
     
     int i = 0, j = 0;
@@ -11593,11 +11445,20 @@ void Encoder::encode_set_ne_reif(const BasicVar& x, const BasicVar& y, const Bas
 void Encoder::encode_set_ne_imp(const BasicVar& x, const BasicVar& y, const BasicVar& r,CNF &cnf_clauses){
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({*r.name});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (distinct " 
-                                     << *x.name << " " << *y.name << "))\n)\n";
+        trivial_encoding_constraints << "(=> " << *r.name << " ";
+        write_set_ne_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << ")\n)\n";
     }
     
     int i = 0, j = 0;
@@ -11663,10 +11524,22 @@ void Encoder::encode_set_intersect(const BasicVar& x, const BasicVar& y, const B
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        auto rs = *get_set_elems(r);
+        smt_constraints_vars.push_back({});
+        for(int elem : union_elems(xs, ys, rs)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+            if(contains_elem(rs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(r, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (bvand " << *x.name << " " << *y.name << "))\n)\n";  
+        write_set_binary_formula(trivial_encoding_constraints, x, xs, y, ys, r, rs, "intersect");
+        trivial_encoding_constraints << "\n)\n";  
     }
 
     int i = 0, j = 0;
@@ -11758,24 +11631,7 @@ void Encoder::encode_set_intersect(const BasicVar& x, const BasicVar& y, const B
 
 }
 
-void Encoder::set_max(const BasicVar& x, const BasicVar& set, CNF &cnf_clauses){
-
-    if(export_proof){
-
-        connection2step_vars.back().insert({*x.name, *set.name});
-        connection2step_vars.push_back({});
-
-        connection2step << "(= " << *x.name << " (leftmost_one " << *set.name << "))\n";
-        connection2step << "---" << endl;
-                    
-        constraints2step2 << "(= " << *x.name << " (leftmost_one " << *set.name << "))\n";
-
-        smt_step1_funs << "(define-fun f_" << *x.name << " () Int\n";
-        smt_step1_funs << "(leftmost_one " << *set.name << ")\n)\n";    
-                          
-        left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
-    }
-
+void Encoder::set_max(const BasicVar& x, const BasicVar& set, int empty_max, CNF &cnf_clauses){
     auto elems = *get_set_elems(set);
 
     auto yes_empty_clause_helper = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
@@ -11814,12 +11670,12 @@ void Encoder::set_max(const BasicVar& x, const BasicVar& set, CNF &cnf_clauses){
         }
     }
 
-    cnf_clauses.push_back({make_literal(LiteralType::ORDER, x.id, true, bv_left-1), not_empty_clause_helper});
+    cnf_clauses.push_back({make_literal(LiteralType::ORDER, x.id, true, empty_max), not_empty_clause_helper});
 
     if(export_proof){
-        helper_map[not_empty_clause_helper->id].push_back({make_literal(LiteralType::ORDER, x.id, true, bv_left-1)});
+        helper_map[not_empty_clause_helper->id].push_back({make_literal(LiteralType::ORDER, x.id, true, empty_max)});
     
-        sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, x.id, true, bv_left-1), not_empty_clause_helper});
+        sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, x.id, true, empty_max), not_empty_clause_helper});
     
     }
 
@@ -11833,18 +11689,129 @@ void Encoder::set_max(const BasicVar& x, const BasicVar& set, CNF &cnf_clauses){
     }
 }
 
+static void add_set_pair_vars(unordered_set<string>& vars, const BasicVar& x, const vector<int>& xs,
+                              const BasicVar& y, const vector<int>& ys){
+    for(int elem : union_elems(xs, ys)){
+        if(contains_elem(xs, elem))
+            vars.insert(set_elem_smt_name(x, elem));
+        if(contains_elem(ys, elem))
+            vars.insert(set_elem_smt_name(y, elem));
+    }
+}
+
+static void write_set_lex_formula(ostream& os, const BasicVar& x, const vector<int>& xs,
+                                  const BasicVar& y, const vector<int>& ys, bool strict){
+    auto elems = union_elems(xs, ys);
+
+    if(elems.empty()){
+        os << (strict ? "false" : "true");
+        return;
+    }
+
+    os << "(or\n";
+    if(!strict)
+        write_set_eq_formula(os, x, xs, y, ys);
+
+    for(size_t i = 0; i < elems.size(); i++){
+        os << "\n(and\n";
+        for(size_t j = 0; j < i; j++)
+            os << "(= " << set_bool_term(x, xs, elems[j]) << " "
+               << set_bool_term(y, ys, elems[j]) << ")\n";
+        os << "(not " << set_bool_term(x, xs, elems[i]) << ")\n";
+        os << set_bool_term(y, ys, elems[i]) << "\n";
+        os << ")";
+    }
+    os << "\n)";
+}
+
+static void write_set_max_relation(ostream& os, const BasicVar& set_var, const vector<int>& elems,
+                                   const BasicVar& max_var, int empty_max){
+    os << "(or\n";
+    for(size_t i = 0; i < elems.size(); i++){
+        os << "(and\n";
+        os << set_elem_smt_name(set_var, elems[i]) << "\n";
+        for(size_t j = i + 1; j < elems.size(); j++)
+            os << "(not " << set_elem_smt_name(set_var, elems[j]) << ")\n";
+        os << "(= " << *max_var.name << " " << smt_int(elems[i]) << ")\n";
+        os << ")\n";
+    }
+    os << "(and\n";
+    for(int elem : elems)
+        os << "(not " << set_elem_smt_name(set_var, elem) << ")\n";
+    os << "(= " << *max_var.name << " " << smt_int(empty_max) << ")\n";
+    os << ")\n";
+    os << ")";
+}
+
+static void write_set_order_condition(ostream& os, const BasicVar& x, const vector<int>& xs,
+                                      const BasicVar& y, const vector<int>& ys,
+                                      const BasicVar& xmax, const BasicVar& ymax,
+                                      bool strict){
+    auto elems = union_elems(xs, ys);
+
+    if(elems.empty()){
+        os << (strict ? "false" : "true");
+        return;
+    }
+
+    os << "(or\n";
+    if(!strict)
+        write_set_eq_formula(os, x, xs, y, ys);
+
+    for(size_t i = 0; i < elems.size(); i++){
+        int elem = elems[i];
+        string x_term = set_bool_term(x, xs, elem);
+        string y_term = set_bool_term(y, ys, elem);
+
+        os << "\n(and\n";
+        for(size_t j = 0; j < i; j++)
+            os << "(= " << set_bool_term(x, xs, elems[j]) << " "
+               << set_bool_term(y, ys, elems[j]) << ")\n";
+
+        os << "(or\n";
+        os << "(and " << x_term << " (not " << y_term << ") (< "
+           << smt_int(elem) << " " << *ymax.name << "))\n";
+        os << "(and (not " << x_term << ") " << y_term << " (< "
+           << *xmax.name << " " << smt_int(elem) << "))\n";
+        os << ")\n";
+        os << ")";
+    }
+    os << "\n)";
+}
+
+static void write_set_order_formula(ostream& os, const BasicVar& x, const vector<int>& xs,
+                                    const BasicVar& y, const vector<int>& ys,
+                                    const BasicVar& xmax, const BasicVar& ymax,
+                                    int empty_max, bool strict){
+    os << "(and\n";
+    write_set_max_relation(os, x, xs, xmax, empty_max);
+    os << "\n";
+    write_set_max_relation(os, y, ys, ymax, empty_max);
+    os << "\n";
+    write_set_order_condition(os, x, xs, y, ys, xmax, ymax, strict);
+    os << "\n)";
+}
+
 // Encodes a constraint of type x <= y
 void Encoder::encode_set_le(const BasicVar& x, const BasicVar& y, CNF &cnf_clauses){
-
-    if(export_proof)
-        smt_constraints_vars.push_back({*x.name, *y.name});
 
     auto x_elems = *get_set_elems(x);
     auto y_elems = *get_set_elems(y);
     int n = x_elems.size();
     int m = y_elems.size();
 
+    if(export_proof){
+        smt_constraints_vars.push_back({});
+        add_set_pair_vars(smt_constraints_vars.back(), x, x_elems, y, y_elems);
+    }
+
     if(x_elems.size() == 0){
+        if(export_proof){
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, false);
+            trivial_encoding_constraints << "\n)\n";
+        }
+
         LiteralPtr yes_helper = make_literal(LiteralType::HELPER, next_helper_id, true, 0);
         LiteralPtr not_helper = make_literal(LiteralType::HELPER, next_helper_id++, false, 0);
 
@@ -11852,27 +11819,15 @@ void Encoder::encode_set_le(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
      
         if(export_proof){
             sat_constraint_clauses.push_back({yes_helper, not_helper});
-        
-            needLex = true;
-            isLIA = true;
-
-            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(or (prefix " << *x.name << " " << *y.name << ") "
-                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                            << "(bvule (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
         }
 
         return;
     }
     if(y_elems.size() == 0){
         if(export_proof){
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(or (prefix " << *x.name << " " << *y.name << ") "
-                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                            << "(bvule (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, false);
+            trivial_encoding_constraints << "\n)\n";
         }
 
         for(auto elem : x_elems){
@@ -11886,46 +11841,27 @@ void Encoder::encode_set_le(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
     }
 
 
-    if(export_proof){
-        is2step = true;
-        needLex = true;
-        isLIA = true;
-        
-        constraint2step_set.insert(next_constraint_num);
-
-
-        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-        constraints2step1 << "(or (prefix " << *x.name << " " << *y.name << ") "
-                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                          << "(bvule (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
-
-        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        constraints2step2 << "(and\n";
-    }
-
-
     int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
     int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
+    int empty_max = l - 1;
 
-    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
-    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto xmax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
 
-    set_max(*xmax, x, cnf_clauses);
-    set_max(*ymax, y, cnf_clauses);
+    set_max(*xmax, x, empty_max, cnf_clauses);
+    set_max(*ymax, y, empty_max, cnf_clauses);
 
     if(export_proof){
-        int bv_diff = bv_right - bv_left + 1;
+        is2step = true;
+        constraint2step_set.insert(next_constraint_num);
 
-        constraints2step2 << "(or\n(= " << *x.name << " " << *y.name << ")\n";
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, false);
+        constraints2step1 << "\n)\n";
 
-        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
-        constraints2step2 << "(ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
-                          << bv_diff << ") (- (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
-                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
-                          <<  " (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")))\n)\n)\n)\n)\n";
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        write_set_order_formula(constraints2step2, x, x_elems, y, y_elems, *xmax, *ymax, empty_max, false);
+        constraints2step2 << "\n)\n";
     }
 
     Clause x_yes_helpers, x_not_helpers;
@@ -12160,44 +12096,40 @@ void Encoder::encode_set_le(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
 // Encodes a constraint of type (x <= y) <=> r
 void Encoder::encode_set_le_reif(const BasicVar& x, const BasicVar& y, const BasicVar& r, CNF &cnf_clauses){
 
-    if(export_proof)
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
-
     auto x_elems = *get_set_elems(x);
     auto y_elems = *get_set_elems(y);
     int n = x_elems.size();
     int m = y_elems.size();
 
+    if(export_proof){
+        smt_constraints_vars.push_back({*r.name});
+        add_set_pair_vars(smt_constraints_vars.back(), x, x_elems, y, y_elems);
+    }
+
     if(x_elems.size() == 0){
+        if(export_proof){
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(= " << *r.name << " ";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, false);
+            trivial_encoding_constraints << ")\n)\n";
+        }
+
         LiteralPtr yes_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0);
 
         cnf_clauses.push_back({yes_r});
      
         if(export_proof){
             sat_constraint_clauses.push_back({yes_r});
-        
-            needLex = true;
-            isLIA = true;
-
-            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " (ite (or (prefix " << *x.name << " " 
-                                         << *y.name << ") " << "(and (not (prefix " 
-                                         << *y.name << " " << *x.name << ")) " 
-                                         << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
         }
 
         return;
     }
     if(y_elems.size() == 0){
         if(export_proof){
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " (ite (or (prefix " << *x.name << " " 
-                                         << *y.name << ") " << "(and (not (prefix " 
-                                         << *y.name << " " << *x.name << ")) " 
-                                         << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+            trivial_encoding_constraints << "(= " << *r.name << " ";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, false);
+            trivial_encoding_constraints << ")\n)\n";
         }
 
         CNF temp_clauses;
@@ -12211,47 +12143,34 @@ void Encoder::encode_set_le_reif(const BasicVar& x, const BasicVar& y, const Bas
         return;
     }
 
+    int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
+    int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
+    int empty_max = l - 1;
+
+    auto xmax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
+
+    set_max(*xmax, x, empty_max, cnf_clauses);
+    set_max(*ymax, y, empty_max, cnf_clauses);
 
     if(export_proof){
         is2step = true;
-        needLex = true;
-        isLIA = true;
-        
         constraint2step_set.insert(next_constraint_num);
 
-
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-        constraints2step1 << "(= " << *r.name << " (ite (or (prefix " << *x.name << " " << *y.name << ") "
-                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                          << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+        constraints2step1 << "(= " << *r.name << " ";
+        write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, false);
+        constraints2step1 << ")\n)\n";
 
         constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         constraints2step2 << "(and\n";
-    }
-
-
-    int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
-    int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
-
-    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
-    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
-
-    set_max(*xmax, x, cnf_clauses);
-    set_max(*ymax, y, cnf_clauses);
-
-    if(export_proof){
-        int bv_diff = bv_right - bv_left + 1;
-
-        constraints2step2 << "(= " << *r.name << " (ite (or\n(= " << *x.name << " " << *y.name << ")\n";
-
-        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
-        constraints2step2 << "(ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
-                          << bv_diff << ") (- (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
-                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
-                          <<  " (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << "))))\n) 1 0)))\n)\n";
+        write_set_max_relation(constraints2step2, x, x_elems, *xmax, empty_max);
+        constraints2step2 << "\n";
+        write_set_max_relation(constraints2step2, y, y_elems, *ymax, empty_max);
+        constraints2step2 << "\n";
+        constraints2step2 << "(= " << *r.name << " ";
+        write_set_order_condition(constraints2step2, x, x_elems, y, y_elems, *xmax, *ymax, false);
+        constraints2step2 << ")\n)\n)\n";
     }
 
     Clause x_yes_helpers, x_not_helpers;
@@ -12492,15 +12411,24 @@ void Encoder::encode_set_le_reif(const BasicVar& x, const BasicVar& y, const Bas
 // Encodes a constraint of type (x <= y) => r
 void Encoder::encode_set_le_imp(const BasicVar& x, const BasicVar& y, const BasicVar& r, CNF &cnf_clauses){
 
-    if(export_proof)
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
-
     auto x_elems = *get_set_elems(x);
     auto y_elems = *get_set_elems(y);
     int n = x_elems.size();
     int m = y_elems.size();
 
+    if(export_proof){
+        smt_constraints_vars.push_back({*r.name});
+        add_set_pair_vars(smt_constraints_vars.back(), x, x_elems, y, y_elems);
+    }
+
     if(x_elems.size() == 0){
+        if(export_proof){
+            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+            trivial_encoding_constraints << "(=> " << *r.name << " ";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, false);
+            trivial_encoding_constraints << ")\n)\n";
+        }
+
         LiteralPtr yes_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0);
         LiteralPtr not_r = make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0);
 
@@ -12508,29 +12436,16 @@ void Encoder::encode_set_le_imp(const BasicVar& x, const BasicVar& y, const Basi
      
         if(export_proof){
             sat_constraint_clauses.push_back({yes_r, not_r});
-        
-            needLex = true;
-            isLIA = true;
-
-            trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (or (prefix " << *x.name << " " 
-                                         << *y.name << ") " << "(and (not (prefix " 
-                                         << *y.name << " " << *x.name << ")) " 
-                                         << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
        }
 
         return;
     }
     if(y_elems.size() == 0){
         if(export_proof){
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (or (prefix " << *x.name << " " 
-                                         << *y.name << ") " << "(and (not (prefix " 
-                                         << *y.name << " " << *x.name << ")) " 
-                                         << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+            trivial_encoding_constraints << "(=> " << *r.name << " ";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, false);
+            trivial_encoding_constraints << ")\n)\n";
         }
 
         CNF temp_clauses;
@@ -12544,47 +12459,34 @@ void Encoder::encode_set_le_imp(const BasicVar& x, const BasicVar& y, const Basi
         return;
     }
 
+    int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
+    int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
+    int empty_max = l - 1;
+
+    auto xmax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
+
+    set_max(*xmax, x, empty_max, cnf_clauses);
+    set_max(*ymax, y, empty_max, cnf_clauses);
 
     if(export_proof){
         is2step = true;
-        needLex = true;
-        isLIA = true;
-        
         constraint2step_set.insert(next_constraint_num);
 
-
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-        constraints2step1 << "(=> (= " << *r.name << " 1) (or (prefix " << *x.name << " " << *y.name << ") "
-                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                          << "(bvule (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+        constraints2step1 << "(=> " << *r.name << " ";
+        write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, false);
+        constraints2step1 << ")\n)\n";
 
         constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         constraints2step2 << "(and\n";
-    }
-
-
-    int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
-    int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
-
-    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
-    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
-
-    set_max(*xmax, x, cnf_clauses);
-    set_max(*ymax, y, cnf_clauses);
-
-    if(export_proof){
-        int bv_diff = bv_right - bv_left + 1;
-
-        constraints2step2 << "(=> (= " << *r.name << " 1) (or\n(= " << *x.name << " " << *y.name << ")\n";
-
-        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
-        constraints2step2 << "(ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
-                          << bv_diff << ") (- (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
-                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
-                          <<  " (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << "))))\n)))\n)\n";
+        write_set_max_relation(constraints2step2, x, x_elems, *xmax, empty_max);
+        constraints2step2 << "\n";
+        write_set_max_relation(constraints2step2, y, y_elems, *ymax, empty_max);
+        constraints2step2 << "\n";
+        constraints2step2 << "(=> " << *r.name << " ";
+        write_set_order_condition(constraints2step2, x, x_elems, y, y_elems, *xmax, *ymax, false);
+        constraints2step2 << ")\n)\n)\n";
     }
 
     Clause x_yes_helpers, x_not_helpers;
@@ -12823,24 +12725,21 @@ void Encoder::encode_set_le_imp(const BasicVar& x, const BasicVar& y, const Basi
 // Encodes a constraint of type x < y
 void Encoder::encode_set_lt(const BasicVar& x, const BasicVar& y, CNF &cnf_clauses){
 
-    if(export_proof)
-        smt_constraints_vars.push_back({*x.name, *y.name});    
-
     auto x_elems = *get_set_elems(x);
     auto y_elems = *get_set_elems(y);
     int n = x_elems.size();
     int m = y_elems.size();
 
+    if(export_proof){
+        smt_constraints_vars.push_back({});
+        add_set_pair_vars(smt_constraints_vars.back(), x, x_elems, y, y_elems);
+    }
+
     if(y_elems.size() == 0){
         if(export_proof){
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(or (and (prefix " << *x.name << " " << *y.name << ") "
-                            << " (distinct " << *x.name << " " << *y.name << ")) "
-                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, true);
+            trivial_encoding_constraints << "\n)\n";
         }
 
         declare_unsat(cnf_clauses);
@@ -12849,19 +12748,12 @@ void Encoder::encode_set_lt(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
     }
 
     if(x_elems.size() == 0){
-     
         if(export_proof){
-        
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(or (and (prefix " << *x.name << " " << *y.name << ") "
-                            << " (distinct " << *x.name << " " << *y.name << ")) "
-                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, true);
+            trivial_encoding_constraints << "\n)\n";
         }
-
+	 
         Clause c;
         for(auto elem : y_elems){
             c.push_back(make_literal(LiteralType::SET_ELEM, y.id, true, elem));
@@ -12877,45 +12769,30 @@ void Encoder::encode_set_lt(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
 
 
     if(export_proof){
-        is2step = true;
-        needLex = true;
-        isLIA = true;
-        
-        constraint2step_set.insert(next_constraint_num);
-
-
-        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-        constraints2step1 << "(or (and (prefix " << *x.name << " " << *y.name << ") "
-                          << "(distinct " << *x.name << " " << *y.name << ")) "
-                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                          << "(bvult (rev " << *y.name << ") (rev " << *x.name << "))))\n)\n";
-
-        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        constraints2step2 << "(and\n";
     }
 
 
     int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
     int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
+    int empty_max = l - 1;
 
-    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
-    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto xmax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
 
-    set_max(*xmax, x, cnf_clauses);
-    set_max(*ymax, y, cnf_clauses);
+    set_max(*xmax, x, empty_max, cnf_clauses);
+    set_max(*ymax, y, empty_max, cnf_clauses);
 
     if(export_proof){
-        int bv_diff = bv_right - bv_left + 1;
+        is2step = true;
+        constraint2step_set.insert(next_constraint_num);
 
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, true);
+        constraints2step1 << "\n)\n";
 
-        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
-        constraints2step2 << "(ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
-                          << bv_diff << ") (- (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
-                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
-                          <<  " (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")))\n)\n)\n)\n";
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        write_set_order_formula(constraints2step2, x, x_elems, y, y_elems, *xmax, *ymax, empty_max, true);
+        constraints2step2 << "\n)\n";
     }
 
     Clause x_yes_helpers, x_not_helpers;
@@ -13150,24 +13027,22 @@ void Encoder::encode_set_lt(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
 // Encodes a constraint of type (x < y) <=> r
 void Encoder::encode_set_lt_reif(const BasicVar& x, const BasicVar& y, const BasicVar& r, CNF &cnf_clauses){
 
-    if(export_proof)
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
-
     auto x_elems = *get_set_elems(x);
     auto y_elems = *get_set_elems(y);
     int n = x_elems.size();
     int m = y_elems.size();
 
+    if(export_proof){
+        smt_constraints_vars.push_back({*r.name});
+        add_set_pair_vars(smt_constraints_vars.back(), x, x_elems, y, y_elems);
+    }
+
     if(y_elems.size() == 0){
         if(export_proof){
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " (ite (or (and (prefix " << *x.name << " " << *y.name << ") "
-                            << " (distinct " << *x.name << " " << *y.name << ")) "
-                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+            trivial_encoding_constraints << "(= " << *r.name << " ";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, true);
+            trivial_encoding_constraints << ")\n)\n";
         }
 
         cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
@@ -13179,19 +13054,13 @@ void Encoder::encode_set_lt_reif(const BasicVar& x, const BasicVar& y, const Bas
     }
 
     if(x_elems.size() == 0){
-     
         if(export_proof){
-        
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " (ite (or (and (prefix " << *x.name << " " << *y.name << ") "
-                            << " (distinct " << *x.name << " " << *y.name << ")) "
-                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
+            trivial_encoding_constraints << "(= " << *r.name << " ";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, true);
+            trivial_encoding_constraints << ")\n)\n";
         }
-
+	 
         Clause c;
         for(auto elem : y_elems){
             c.push_back(make_literal(LiteralType::SET_ELEM, y.id, true, elem));
@@ -13206,45 +13075,37 @@ void Encoder::encode_set_lt_reif(const BasicVar& x, const BasicVar& y, const Bas
 
 
     if(export_proof){
-        is2step = true;
-        needLex = true;
-        isLIA = true;
-        
-        constraint2step_set.insert(next_constraint_num);
-
-
-        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-        constraints2step1 << "(= " << *r.name << " (ite (or (and (prefix " << *x.name << " " << *y.name << ") "
-                          << "(distinct " << *x.name << " " << *y.name << ")) "
-                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                          << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))) 1 0))\n)\n";
-
-        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        constraints2step2 << "(and\n";
     }
 
 
     int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
     int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
+    int empty_max = l - 1;
 
-    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
-    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto xmax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
 
-    set_max(*xmax, x, cnf_clauses);
-    set_max(*ymax, y, cnf_clauses);
+    set_max(*xmax, x, empty_max, cnf_clauses);
+    set_max(*ymax, y, empty_max, cnf_clauses);
 
     if(export_proof){
-        int bv_diff = bv_right - bv_left + 1;
+        is2step = true;
+        constraint2step_set.insert(next_constraint_num);
 
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        constraints2step1 << "(= " << *r.name << " ";
+        write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, true);
+        constraints2step1 << ")\n)\n";
 
-        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
-        constraints2step2 << "(= " << *r.name << " (ite (ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
-                          << bv_diff << ") (- (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
-                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
-                          <<  " (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")))\n) 1 0))\n)\n)\n";
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        constraints2step2 << "(and\n";
+        write_set_max_relation(constraints2step2, x, x_elems, *xmax, empty_max);
+        constraints2step2 << "\n";
+        write_set_max_relation(constraints2step2, y, y_elems, *ymax, empty_max);
+        constraints2step2 << "\n";
+        constraints2step2 << "(= " << *r.name << " ";
+        write_set_order_condition(constraints2step2, x, x_elems, y, y_elems, *xmax, *ymax, true);
+        constraints2step2 << ")\n)\n)\n";
     }
 
     Clause x_yes_helpers, x_not_helpers;
@@ -13485,24 +13346,22 @@ void Encoder::encode_set_lt_reif(const BasicVar& x, const BasicVar& y, const Bas
 // Encodes a constraint of type (x < y) => r
 void Encoder::encode_set_lt_imp(const BasicVar& x, const BasicVar& y, const BasicVar& r, CNF &cnf_clauses){
 
-    if(export_proof)
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
-
     auto x_elems = *get_set_elems(x);
     auto y_elems = *get_set_elems(y);
     int n = x_elems.size();
     int m = y_elems.size();
 
+    if(export_proof){
+        smt_constraints_vars.push_back({*r.name});
+        add_set_pair_vars(smt_constraints_vars.back(), x, x_elems, y, y_elems);
+    }
+
     if(y_elems.size() == 0){
         if(export_proof){
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (or (and (prefix " << *x.name << " " << *y.name << ") "
-                            << " (distinct " << *x.name << " " << *y.name << ")) "
-                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+            trivial_encoding_constraints << "(=> " << *r.name << " ";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, true);
+            trivial_encoding_constraints << ")\n)\n";
         }
 
         cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
@@ -13514,19 +13373,13 @@ void Encoder::encode_set_lt_imp(const BasicVar& x, const BasicVar& y, const Basi
     }
 
     if(x_elems.size() == 0){
-     
         if(export_proof){
-        
-            needLex = true;
-            isLIA = true;
-
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (or (and (prefix " << *x.name << " " << *y.name << ") "
-                            << " (distinct " << *x.name << " " << *y.name << ")) "
-                            << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                            << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
+            trivial_encoding_constraints << "(=> " << *r.name << " ";
+            write_set_lex_formula(trivial_encoding_constraints, x, x_elems, y, y_elems, true);
+            trivial_encoding_constraints << ")\n)\n";
         }
-
+	 
         Clause c;
         for(auto elem : y_elems){
             c.push_back(make_literal(LiteralType::SET_ELEM, y.id, true, elem));
@@ -13541,45 +13394,37 @@ void Encoder::encode_set_lt_imp(const BasicVar& x, const BasicVar& y, const Basi
 
 
     if(export_proof){
-        is2step = true;
-        needLex = true;
-        isLIA = true;
-        
-        constraint2step_set.insert(next_constraint_num);
-
-
-        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-        constraints2step1 << "(=> (= " << *r.name << " 1) (or (and (prefix " << *x.name << " " << *y.name << ") "
-                          << "(distinct " << *x.name << " " << *y.name << ")) "
-                          << "(and (not (prefix " << *y.name << " " << *x.name << ")) " 
-                          << "(bvult (rev " << *y.name << ") (rev " << *x.name << ")))))\n)\n";
-
-        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        constraints2step2 << "(and\n";
     }
 
 
     int l = x_elems[0] < y_elems[0] ? x_elems[0] : y_elems[0];
     int u = x_elems[n-1] > y_elems[m-1] ? x_elems[n-1] : y_elems[m-1];
+    int empty_max = l - 1;
 
-    auto xmax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
-    auto ymax = encode_int_range_helper_variable(bv_left-1, u, cnf_clauses, true);
+    auto xmax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
+    auto ymax = encode_int_range_helper_variable(empty_max, u, cnf_clauses, true);
 
-    set_max(*xmax, x, cnf_clauses);
-    set_max(*ymax, y, cnf_clauses);
+    set_max(*xmax, x, empty_max, cnf_clauses);
+    set_max(*ymax, y, empty_max, cnf_clauses);
 
     if(export_proof){
-        int bv_diff = bv_right - bv_left + 1;
+        is2step = true;
+        constraint2step_set.insert(next_constraint_num);
 
+        constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
+        constraints2step1 << "(=> " << *r.name << " ";
+        write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, true);
+        constraints2step1 << ")\n)\n";
 
-        string bv_left_string = (bv_left < 0) ? "(- " + to_string(-bv_left) + ")" : to_string(bv_left);
-        constraints2step2 << "(=> (= " << *r.name << " 1) (ite (= (bvand (bvlshr " << *x.name << " ((_ int2bv " 
-                          << bv_diff << ") (- (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << bv_left_string << "))) (_ bv1 " << bv_diff 
-                          << ")) (_ bv1 " << bv_diff << "))\n(< (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")) " << *ymax->name << ")\n(< " << *xmax->name 
-                          <<  " (rightmost_one (bvxor " 
-                          << *x.name << " " << *y.name << ")))\n))\n)\n)\n";
+        constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
+        constraints2step2 << "(and\n";
+        write_set_max_relation(constraints2step2, x, x_elems, *xmax, empty_max);
+        constraints2step2 << "\n";
+        write_set_max_relation(constraints2step2, y, y_elems, *ymax, empty_max);
+        constraints2step2 << "\n";
+        constraints2step2 << "(=> " << *r.name << " ";
+        write_set_order_condition(constraints2step2, x, x_elems, y, y_elems, *xmax, *ymax, true);
+        constraints2step2 << ")\n)\n)\n";
     }
 
     Clause x_yes_helpers, x_not_helpers;
@@ -13814,15 +13659,37 @@ void Encoder::encode_set_lt_imp(const BasicVar& x, const BasicVar& y, const Basi
     }
 }
 
+static void write_set_subset_formula(ostream& os, const BasicVar& x, const vector<int>& xs,
+                                     const BasicVar& y, const vector<int>& ys){
+    if(xs.empty()){
+        os << "true";
+        return;
+    }
+
+    os << "(and\n";
+    for(int elem : xs)
+        os << "(=> " << set_elem_smt_name(x, elem) << " " << set_bool_term(y, ys, elem) << ")\n";
+    os << ")";
+}
+
 // Encodes a constraint of type x ⊆ y
 void Encoder::encode_set_subset(const BasicVar& x, const BasicVar& y, CNF &cnf_clauses){
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *y.name << " (bvor " << *x.name << " " << *y.name << "))\n)\n";
+        write_set_subset_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << "\n)\n";
     }
 
     int i = 0, j = 0;
@@ -13864,11 +13731,20 @@ void Encoder::encode_set_subset_reif(const BasicVar& x, const BasicVar& y, const
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({*r.name});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (ite (= " << *y.name << " (bvor " 
-                                     << *x.name << " " << *y.name << ")) 1 0))\n)\n";
+        trivial_encoding_constraints << "(= " << *r.name << " ";
+        write_set_subset_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << ")\n)\n";
     }
 
     CNF temp_clauses;    
@@ -13889,11 +13765,20 @@ void Encoder::encode_set_subset_imp(const BasicVar& x, const BasicVar& y, const 
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        smt_constraints_vars.push_back({*r.name});
+        for(int elem : union_elems(xs, ys)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(=> (= " << *r.name << " 1) (= " << *y.name << " (bvor " 
-                                     << *x.name << " " << *y.name << ")))\n)\n";
+        trivial_encoding_constraints << "(=> " << *r.name << " ";
+        write_set_subset_formula(trivial_encoding_constraints, x, xs, y, ys);
+        trivial_encoding_constraints << ")\n)\n";
     }
 
     CNF temp_clauses;    
@@ -13933,11 +13818,22 @@ void Encoder::encode_set_symdiff(const BasicVar& x, const BasicVar& y, const Bas
     
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        auto rs = *get_set_elems(r);
+        smt_constraints_vars.push_back({});
+        for(int elem : union_elems(xs, ys, rs)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+            if(contains_elem(rs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(r, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (bvor (bvand " << *x.name << " (bvnot " << *y.name << "))"
-                                     << " (bvand " << *y.name << " (bvnot " << *x.name << "))))\n)\n";
+        write_set_binary_formula(trivial_encoding_constraints, x, xs, y, ys, r, rs, "symdiff");
+        trivial_encoding_constraints << "\n)\n";
     }
     
     int i = 0, j = 0;
@@ -14084,10 +13980,22 @@ void Encoder::encode_set_union(const BasicVar& x, const BasicVar& y, const Basic
 
     if(export_proof){
 
-        smt_constraints_vars.push_back({*x.name, *y.name, *r.name});
+        auto xs = *get_set_elems(x);
+        auto ys = *get_set_elems(y);
+        auto rs = *get_set_elems(r);
+        smt_constraints_vars.push_back({});
+        for(int elem : union_elems(xs, ys, rs)){
+            if(contains_elem(xs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(x, elem));
+            if(contains_elem(ys, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(y, elem));
+            if(contains_elem(rs, elem))
+                smt_constraints_vars.back().insert(set_elem_smt_name(r, elem));
+        }
 
         trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-        trivial_encoding_constraints << "(= " << *r.name << " (bvor " << *x.name << " " << *y.name << "))\n)\n";  
+        write_set_binary_formula(trivial_encoding_constraints, x, xs, y, ys, r, rs, "union");
+        trivial_encoding_constraints << "\n)\n";  
     }
 
     int i = 0, j = 0;

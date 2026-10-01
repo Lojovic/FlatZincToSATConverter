@@ -40,6 +40,9 @@ cleanup() {
         "${INPUT_DIR}/${INPUT_BASE}.opt" \
         "${INPUT_DIR}/${INPUT_BASE}.best" \
         "${INPUT_DIR}/${INPUT_BASE}.proof" \
+        "${INPUT_DIR}/${INPUT_BASE}.optmap" \
+        "${INPUT_DIR}/${INPUT_BASE}.base.cnf" \
+        "${INPUT_DIR}/${INPUT_BASE}.base.body.cnf" \
         formula.cnf \
         model.out
 }
@@ -107,12 +110,168 @@ fi
 
 BEST_VALUE=""
 FIRST_RUN=1
+OPT_MAP="${INPUT_DIR}/${INPUT_BASE}.optmap"
+BASE_CNF="${INPUT_DIR}/${INPUT_BASE}.base.cnf"
+BASE_BODY="${INPUT_DIR}/${INPUT_BASE}.base.body.cnf"
+CURRENT_BOUND_LIT=""
+
+declare -A ORDER_LIT
+declare -A ASSIGN_TRUE
+ALLOWED_VALUES=()
+OBJ_LOWER=""
+OBJ_UPPER=""
+BASE_VARS=""
+BASE_CLAUSES=""
+
+load_optimization_metadata() {
+    local key
+    local value
+    local lit
+
+    while read -r key value lit; do
+        case "$key" in
+            lower) OBJ_LOWER="$value" ;;
+            upper) OBJ_UPPER="$value" ;;
+            dimacs_vars) BASE_VARS="$value" ;;
+            clauses) BASE_CLAUSES="$value" ;;
+            allowed) ALLOWED_VALUES+=("$value") ;;
+            order) ORDER_LIT["$value"]="$lit" ;;
+        esac
+    done < "$OPT_MAP"
+
+    [ -n "$OBJ_LOWER" ] || die "Missing objective lower bound in $OPT_MAP"
+    [ -n "$OBJ_UPPER" ] || die "Missing objective upper bound in $OPT_MAP"
+    [ -n "$BASE_VARS" ] || die "Missing DIMACS variable count in $OPT_MAP"
+    [ -n "$BASE_CLAUSES" ] || die "Missing base clause count in $OPT_MAP"
+    [ "${#ALLOWED_VALUES[@]}" -gt 0 ] || die "Missing objective allowed values in $OPT_MAP"
+}
+
+literal_for_le_bound() {
+    local bound=$1
+
+    if [ "$bound" -ge "$OBJ_UPPER" ]; then
+        echo "NONE"
+    elif [ "$bound" -lt "$OBJ_LOWER" ]; then
+        echo "UNSAT"
+    else
+        [ -n "${ORDER_LIT[$bound]:-}" ] || die "No order literal for $OPT_VAR <= $bound"
+        echo "${ORDER_LIT[$bound]}"
+    fi
+}
+
+strict_bound_literal() {
+    local value=$1
+
+    if [ "$OPT_TYPE" = "minimize" ]; then
+        literal_for_le_bound "$((value - 1))"
+    elif [ "$OPT_TYPE" = "maximize" ]; then
+        if [ "$value" -ge "$OBJ_UPPER" ]; then
+            echo "UNSAT"
+        elif [ "$value" -lt "$OBJ_LOWER" ]; then
+            echo "NONE"
+        else
+            [ -n "${ORDER_LIT[$value]:-}" ] || die "No order literal for $OPT_VAR <= $value"
+            echo "-${ORDER_LIT[$value]}"
+        fi
+    else
+        echo "NONE"
+    fi
+}
+
+write_incremental_formula() {
+    local bound_lit=$1
+    local extra_clauses=0
+
+    if [ "$bound_lit" != "NONE" ]; then
+        extra_clauses=1
+    fi
+
+    {
+        echo "p cnf $BASE_VARS $((BASE_CLAUSES + extra_clauses))"
+        cat "$BASE_BODY"
+        if [ "$bound_lit" != "NONE" ]; then
+            echo "$bound_lit 0"
+        fi
+    } > formula.cnf
+}
+
+run_incremental_solver() {
+    local bound_lit=$1
+    local solver_status
+
+    if [ "$bound_lit" = "UNSAT" ]; then
+        echo "UNSAT" > model.out
+        return
+    fi
+
+    write_incremental_formula "$bound_lit"
+    set +e
+    cadical -q formula.cnf | cut -c2- > model.out
+    solver_status=$?
+    set -e
+
+    if [ "$solver_status" -ne 0 ] && [ "$solver_status" -ne 10 ] && [ "$solver_status" -ne 20 ]; then
+        return "$solver_status"
+    fi
+}
+
+load_assignment() {
+    local token
+
+    ASSIGN_TRUE=()
+    while read -r -a tokens; do
+        for token in "${tokens[@]}"; do
+            if [[ "$token" =~ ^-?[0-9]+$ ]] && [ "$token" -gt 0 ]; then
+                ASSIGN_TRUE["$token"]=1
+            fi
+        done
+    done < model.out
+}
+
+objective_from_assignment() {
+    local value
+    local lit
+
+    load_assignment
+    for value in "${ALLOWED_VALUES[@]}"; do
+        lit="${ORDER_LIT[$value]:-}"
+        if [ -n "$lit" ] && [ -n "${ASSIGN_TRUE[$lit]:-}" ]; then
+            echo "$value"
+            return
+        fi
+    done
+
+    return 1
+}
+
+normalize_status() {
+    local status
+    status=$(echo "$1" | xargs)
+
+    case "$status" in
+        SAT|SATISFIABLE) echo "SAT" ;;
+        UNSAT|UNSATISFIABLE) echo "UNSAT" ;;
+        *) echo "$status" ;;
+    esac
+}
+
+SOLVER_OUTPUT=$(./flatzinc_to_sat -opt-var="$OPT_VAR" -opt-map="$OPT_MAP" "$WORK_FZN") \
+    || die "Solver failed on $WORK_FZN"
+
+[ -f formula.cnf ] || die "Expected formula.cnf after base encoding"
+cp formula.cnf "$BASE_CNF"
+tail -n +2 "$BASE_CNF" > "$BASE_BODY"
+load_optimization_metadata
 
 while true; do
-    SOLVER_OUTPUT=$(./flatzinc_to_sat "$WORK_FZN") \
-        || die "Solver failed on $WORK_FZN"
+    if [ "$FIRST_RUN" -eq 0 ]; then
+        run_incremental_solver "$CURRENT_BOUND_LIT" \
+            || die "Solver failed on incremental bound"
+        STATUS=$(normalize_status "$(head -n 1 model.out)")
+    else
+        STATUS=$(normalize_status "$(printf "%s\n" "$SOLVER_OUTPUT" | head -n 1)")
+    fi
 
-    STATUS=$(printf "%s\n" "$SOLVER_OUTPUT" | head -n 1)
 
     if [ "$STATUS" = "UNSAT" ]; then
     	if [ "$FIRST_RUN" -eq 1 ]; then
@@ -144,15 +303,19 @@ while true; do
 
     [ "$STATUS" = "SAT" ] || die "Unexpected solver status: '$STATUS'"
 
-    FIRST_RUN=0
-
-    CUR_VALUE=$(printf "%s\n" "$SOLVER_OUTPUT" \
-        | grep -E "^${OPT_VAR}[[:space:]]*=" \
-        | sed -E "s/^${OPT_VAR}[[:space:]]*=[[:space:]]*([^;[:space:]]+).*/\1/")
+    if [ "$FIRST_RUN" -eq 1 ]; then
+        CUR_VALUE=$(printf "%s\n" "$SOLVER_OUTPUT" \
+            | grep -E "^${OPT_VAR}[[:space:]]*=" \
+            | sed -E "s/^${OPT_VAR}[[:space:]]*=[[:space:]]*([^;[:space:]]+).*/\1/")
+    else
+        CUR_VALUE=$(objective_from_assignment) \
+            || die "Objective variable '$OPT_VAR' could not be decoded from SAT assignment"
+    fi
 
     [ -n "$CUR_VALUE" ] || die "Objective variable '$OPT_VAR' not found in solver output"
 
     BEST_VALUE="$CUR_VALUE"
+    FIRST_RUN=0
 
     if [ "$OPT_TYPE" = "maximize" ]; then
         NEW_CONSTRAINT="constraint int_lt(${BEST_VALUE}, ${OPT_VAR}) :: ${BOUND_ANN};"
@@ -170,6 +333,7 @@ while true; do
         || die "Failed to inject bound constraint"
 
     mv "${WORK_FZN}.tmp" "$WORK_FZN"
+    CURRENT_BOUND_LIT=$(strict_bound_literal "$BEST_VALUE")
 done
 
 if [ "$EXPORT_PROOF" -eq 1 ]; then

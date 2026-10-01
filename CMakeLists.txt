@@ -83,3 +83,15 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/scripts/discharge-proofs
             $<TARGET_FILE_DIR:flatzinc_to_sat>/discharge-proofs
 )
+
+add_custom_target(copy_runtime_scripts ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/scripts/optimizer
+            $<TARGET_FILE_DIR:flatzinc_to_sat>/optimizer
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/scripts/discharge-proofs
+            $<TARGET_FILE_DIR:flatzinc_to_sat>/discharge-proofs
+    DEPENDS
+            ${CMAKE_SOURCE_DIR}/scripts/optimizer
+            ${CMAKE_SOURCE_DIR}/scripts/discharge-proofs
+)

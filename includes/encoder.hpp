@@ -99,6 +99,7 @@ public:
     void run_solver(const string &outputFile);
     void read_solver_output(const string &outputFile);
     void generate_proof();
+    bool write_optimization_metadata(const string &var_name, const string &output_file);
 
     bool unsat = false;
 
@@ -160,11 +161,7 @@ private:
     bool isUF = false;
     bool isLIA = false;
     bool isNIA = false;
-    bool isBV = false;
-    bool needOnes = false;
     bool needModDiv = false;
-    bool needLex = false;
-    int bv_left = numeric_limits<int>::max(), bv_right = numeric_limits<int>::min();
     CNF definition_clauses;
     CNF sat_dom_clauses;
     CNF sat_dom_clauses2step;
@@ -177,14 +174,12 @@ private:
     void write_sat_constraint_clauses();
     void write_sat_dom_clauses(CNF& clauses);
     vector<BasicVar *> set_vars;
-    vector<pair<string, string>> set_in_pairs;
-    vector<tuple<string, string, string>> set_in_reif_pairs;
-    vector<tuple<string, string, string>> set_in_imp_pairs;
+    vector<tuple<string, string, vector<int>>> set_in_pairs;
+    vector<tuple<string, string, string, vector<int>>> set_in_reif_pairs;
+    vector<tuple<string, string, string, vector<int>>> set_in_imp_pairs;
     void handle_set_vars();
     void handle_set_in_constraints();
-    void write_ones(ofstream &proof_file);
     void write_mod_div(ofstream &proof_file);
-    void write_lex(ofstream &proof_file);
     int next_array = 1;
     bool is2step = false;
     ofstream connection2step;
@@ -239,7 +234,6 @@ private:
     int clause_num = 0; 
 
     void declare_unsat(CNF &cnf_clauses);
-    void set_bv_limits();
     void generate_proof2step();
 
     void write_clauses_to_dimacs_file(CNF &cnf_clauses);
@@ -352,7 +346,7 @@ private:
     void encode_set_ne_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
     void encode_set_ne_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
     void encode_set_intersect(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
-    void set_max(const BasicVar &x, const BasicVar &set, CNF &cnf_clauses);
+    void set_max(const BasicVar &x, const BasicVar &set, int empty_max, CNF &cnf_clauses);
     void encode_set_le(const BasicVar &x, const BasicVar &y, CNF &cnf_clauses);
     void encode_set_le_reif(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);
     void encode_set_le_imp(const BasicVar &x, const BasicVar &y, const BasicVar &r, CNF &cnf_clauses);

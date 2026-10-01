@@ -38,7 +38,9 @@ int main(int argc, char** argv) {
     FileType file_type = DIMACS;
     SolverType solver_type = CADICAL;
     const char* input_file = nullptr;
-    bool export_proof;
+    bool export_proof = false;
+    string opt_var;
+    string opt_map_file;
 
     for (int i = 1; i < argc; ++i) {
         string arg(argv[i]);
@@ -64,6 +66,10 @@ int main(int argc, char** argv) {
             }
         } else if (arg.rfind("-export-proof", 0) == 0) {
             export_proof = true;
+        } else if (arg.rfind("-opt-var=", 0) == 0) {
+            opt_var = arg.substr(9);
+        } else if (arg.rfind("-opt-map=", 0) == 0) {
+            opt_map_file = arg.substr(9);
         } else if (arg[0] != '-') {
             input_file = argv[i]; 
         } else {
@@ -102,6 +108,11 @@ int main(int argc, char** argv) {
     auto clauses = encoder.encode_to_cnf();
 
     encoder.write_to_file();
+    if(!opt_var.empty()){
+        string metadata_file = opt_map_file.empty() ? "objective.map" : opt_map_file;
+        if(!encoder.write_optimization_metadata(opt_var, metadata_file))
+            return 1;
+    }
     encoder.run_solver("model.out");
     encoder.read_solver_output("model.out");
     if(export_proof)
