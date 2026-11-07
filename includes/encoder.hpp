@@ -22,6 +22,7 @@ using namespace std;
 enum LiteralType {ORDER, BOOL_VARIABLE, HELPER, DIRECT, SET_ELEM};
 enum FileType {DIMACS, SMTLIB};
 enum SolverType {MINISAT, CADICAL, GLUCOSE, Z3, CVC5};
+enum SatVarRole {VISIBLE, AUXILIARY};
 
 struct Literal{
     LiteralType type;
@@ -83,8 +84,6 @@ struct VarLineCache {
 struct InternedProofVars {
     IntChunks smt_dom;
     IntChunks sat_dom;
-    IntChunks smt_subspace;
-    IntChunks sat_subspace;
     IntChunks smt_constraints;
     IntChunks sat_constraints;
     IntChunks smt_sat_rel;
@@ -144,8 +143,12 @@ private:
     unordered_map<string, Variable*> variable_map;
     unordered_map<string, Variable*> array_map; 
     unordered_map<int, Variable*> id_map; 
+    unordered_map<int, string> smt_name_by_id;
     unordered_map<tuple<LiteralType, int, int>, int, tuple_hash> literal_to_num;
     unordered_map<int, LiteralPtr> num_to_literal;
+    unordered_map<int, LiteralPtr> sat_num_to_literal;
+    unordered_map<int, SatVarRole> sat_var_roles;
+    unordered_map<int, string> step1_witness_exprs;
     unordered_map<int, set<int>> set_variable_map;
     set<ArrayVar*> array_set;
     vector<BasicVar*> helper_vars;
@@ -166,8 +169,6 @@ private:
     CNF sat_dom_clauses;
     CNF sat_dom_clauses2step;
     CNF sat_constraint_clauses;
-    void write_lit_definition_clauses_smt_subspace(LiteralPtr lit);
-    void write_lit_definition_clauses_sat_subspace(LiteralPtr lit);
     set<LiteralPtr> todo_lits;
     void write_lit_definition_clauses_fun(LiteralPtr lit, bool should_define_fun);
     void write_definition_clauses();
@@ -192,11 +193,8 @@ private:
     ofstream smt_sat_funs;
     ofstream smt_step1_funs;
     ofstream left_total;
-    ofstream left_total_step1;
+    ofstream step1_auxiliary_witnesses;
     ofstream right_total;
-    ofstream smt_subspace;
-    ofstream smt_subspace_step1;
-    ofstream sat_subspace;
     void flush_buffers();
     set<string*> encoded2step;
     int next_constraint_num = 1;
@@ -207,11 +205,10 @@ private:
     int sub_index1 = -1;
     int sub_index2 = -1;
     unordered_map<tuple<int, int, int, int>, BasicVar*, substitution_map_hash> encoded_substitutions;
+    unordered_map<int, int> substitution_defining_constraint;
+    unordered_map<int, unordered_set<int>> step1_constraint_dependencies;
 
-    vector<unordered_set<string>> sat_subspace_vars = {{}};
     vector<unordered_set<string>> sat_constraints_vars = {{}};
-    vector<unordered_set<string>> smt_subspace_vars = {{}};
-    vector<unordered_set<string>> smt_subspace_step1_vars = {{}};
     vector<unordered_set<string>> connection2step_vars = {{}};
     vector<unordered_set<string>> smt_constraints_vars;
     vector<unordered_set<string>> smt_sat_rel_vars = {{}};
@@ -220,11 +217,7 @@ private:
     vector<unordered_set<string>> smt_dom_vars2step = {{}};
     unordered_set<pair<string, string>, pair_hash> var_pairs;
 
-    int sat_subspace_num = 1;
-    int smt_subspace_num = 1;
     int smt_sat_rel_num = 1;
-    int smt_subspace_step1_num = 1;
-    int smt_subspace_step2_num = 1;
     int sat_dom_num = 1;
     int smt_dom_num = 1;
 
@@ -238,6 +231,16 @@ private:
 
     void write_clauses_to_dimacs_file(CNF &cnf_clauses);
     void write_clauses_to_smtlib_file(CNF &cnf_clauses);
+    bool is_auxiliary_literal(const LiteralPtr &lit) const;
+    void register_sat_var_role(int lit_num, const LiteralPtr &lit);
+    bool is_visible_sat_var(int lit_num) const;
+    void write_visible_relation_for_literal(int lit_num, const LiteralPtr &lit);
+    void write_literal_smt_expr(ostream &out, const LiteralPtr &lit);
+    void write_helper_smt_expr(ostream &out, const LiteralPtr &lit);
+    void write_auxiliary_witnesses();
+    string smt_name_for_id(int id) const;
+    string step1_witness_term(const BasicVar &var) const;
+    void write_step1_int_witness(const BasicVar &var, const string &expr);
     ArrayLiteral *get_array(Constraint &constr, int ind);
     BasicLiteralExpr* get_const(Constraint &constr, int ind);
     SetLiteral* get_set_from_array(const ArrayLiteral &a, int ind);
@@ -274,6 +277,7 @@ private:
     void encode_int_le(const BasicVar &a, const BasicVar &b, CNF &cnf_clauses);
     void encode_int_le_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
     void encode_int_le_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
+    void record_step1_substitution_dependency(const BasicVar &var);
     void encode_substitution(const BasicVar &var, const BasicVar &var1, const int coef1, const BasicVar &var2, const int coef2, CNF &cnf_clauses);
     void lin_le_2args(const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, int c, CNF &cnf_clauses);
     void lin_le_3args(const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, const BasicVar &x3, int coef3, int c, CNF &cnf_clauses);

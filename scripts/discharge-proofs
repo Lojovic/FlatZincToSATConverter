@@ -5,7 +5,7 @@ usage() {
     cat <<'EOF'
 Usage: discharge-proofs [--results OUT_CSV] PROOF_DIR
 
-Runs the five proof-obligation bodies in PROOF_DIR one by one by piping:
+Runs the proof-obligation bodies in PROOF_DIR one by one by piping:
   cat prelude body | timeout TIMEOUT_SECONDS z3 -in
 
 With --results, PROOF_DIR may also be a problem-level folder containing:
@@ -104,20 +104,16 @@ run_proof_dir() {
     if [[ -f "$proof_dir/prelude.smt2" ]]; then
         prelude="$proof_dir/prelude.smt2"
         obligations=(
-            "smt_containing:$proof_dir/smt_containing_body.smt2"
-            "sat_containing:$proof_dir/sat_containing_body.smt2"
             "left_total:$proof_dir/left_total_body.smt2"
             "right_total:$proof_dir/right_total_body.smt2"
-            "soundness:$proof_dir/soundness_body.smt2"
+            "soundness_left:$proof_dir/soundness_left_body.smt2"
+            "soundness_right:$proof_dir/soundness_right_body.smt2"
         )
     elif [[ -f "$proof_dir/prelude_step1.smt2" ]]; then
         prelude="$proof_dir/prelude_step1.smt2"
         obligations=(
-            "smt_containing_step1:$proof_dir/smt_containing_step1_body_step1.smt2"
-            "smt_containing_step2:$proof_dir/smt_containing_step2_body_step1.smt2"
-            "left_total_step1:$proof_dir/left_total_body_step1.smt2"
-            "right_total_step1:$proof_dir/right_total_body_step1.smt2"
-            "soundness_step1:$proof_dir/soundness_body_step1.smt2"
+            "soundness_left_step1:$proof_dir/soundness_left_body_step1.smt2"
+            "soundness_right_step1:$proof_dir/soundness_right_body_step1.smt2"
         )
     else
         echo "Expected prelude.smt2 or prelude_step1.smt2 in: $proof_dir" >&2

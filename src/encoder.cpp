@@ -1,39 +1,5 @@
 #include "../includes/encoder.hpp"
 
-int get_left(const BasicVar* var);
-int get_right(const BasicVar* var);
-
-static void write_sat_constraint_definition(ostream& out, int index, const vector<string>& lines){
-    out << "(define-fun sat_c" << index << " () Bool\n";
-    if(lines.empty()){
-        out << "true\n)\n";
-        return;
-    }
-
-    out << "(and\n";
-    for(const string& line : lines)
-        out << line << '\n';
-    out << ")\n)\n";
-}
-
-static void write_sat_constraint_definitions(ostream& out){
-    ifstream sat_constraints_file("sat_constraints.smt2");
-    vector<string> lines;
-    string line;
-    int k = 1;
-
-    while(getline(sat_constraints_file, line)){
-        if(line == "---"){
-            write_sat_constraint_definition(out, k++, lines);
-            lines.clear();
-        } else {
-            lines.push_back(line);
-        }
-    }
-
-    write_sat_constraint_definition(out, k, lines);
-}
-
 Encoder::Encoder(const vector<Item> &items, const FileType file_type, const SolverType solver_type, bool export_proof) 
 : items(items), file_type(file_type), solver_type(solver_type), export_proof(export_proof) { 
 
@@ -52,11 +18,8 @@ Encoder::Encoder(const vector<Item> &items, const FileType file_type, const Solv
         smt_sat_funs = ofstream("smt_sat_funs.smt2", ios::out);
         smt_step1_funs = ofstream("smt_step1_funs.smt2", ios::out);
         left_total = ofstream("left_total.smt2", ios::out);
-        left_total_step1 = ofstream("left_total_step1.smt2", ios::out);
+        step1_auxiliary_witnesses = ofstream("step1_auxiliary_witnesses.smt2", ios::out);
         right_total = ofstream("right_total.smt2", ios::out);
-        smt_subspace = ofstream("smt_subspace.smt2", ios::out);
-        smt_subspace_step1 = ofstream("smt_subspace_step1.smt2", ios::out);
-        sat_subspace = ofstream("sat_subspace.smt2", ios::out);
     }
 }
 
@@ -147,6 +110,67 @@ void Encoder::write_to_file(){
     }
 }
 
+static void write_sat_constraint_definition(ostream& out, int index, const vector<string>& lines){
+    out << "(define-fun sat_c" << index << " () Bool\n";
+    if(lines.empty()){
+        out << "true\n)\n";
+        return;
+    }
+
+    out << "(and\n";
+    for(const string& line : lines)
+        out << line << '\n';
+    out << ")\n)\n";
+}
+
+static void write_sat_constraint_definitions(ostream& out){
+    ifstream sat_constraints_file("sat_constraints.smt2");
+    vector<string> lines;
+    string line;
+    int k = 1;
+
+    while(getline(sat_constraints_file, line)){
+        if(line == "---"){
+            write_sat_constraint_definition(out, k++, lines);
+            lines.clear();
+        } else {
+            lines.push_back(line);
+        }
+    }
+
+    if(!lines.empty())
+        write_sat_constraint_definition(out, k, lines);
+}
+
+bool Encoder::is_auxiliary_literal(const LiteralPtr& lit) const {
+    return lit->type == LiteralType::HELPER;
+}
+
+void Encoder::register_sat_var_role(int lit_num, const LiteralPtr& lit) {
+    sat_var_roles[lit_num] = is_auxiliary_literal(lit) ? SatVarRole::AUXILIARY : SatVarRole::VISIBLE;
+}
+
+
+// Gets the left border of an int variable domain
+int get_left(const BasicVar* var){
+    if(holds_alternative<IntRangeVarType*>(*var->type))
+        return get<IntRangeVarType*>(*var->type)->left;
+    else if(holds_alternative<IntSetVarType*>(*var->type))
+        return (*get<IntSetVarType*>(*var->type)->elems)[0];
+    else 
+        return 0;
+}
+
+// Gets the right border of an int variable domain
+int get_right(const BasicVar* var){
+    if(holds_alternative<IntRangeVarType*>(*var->type))
+        return get<IntRangeVarType*>(*var->type)->right;
+    else if(holds_alternative<IntSetVarType*>(*var->type))
+        return (*get<IntSetVarType*>(*var->type)->elems)[get<IntSetVarType*>(*var->type)->elems->size()-1];
+    else
+        return 1;
+}
+
 bool Encoder::write_optimization_metadata(const string& var_name, const string& output_file) {
     auto var_it = variable_map.find(var_name);
     if (var_it == variable_map.end() || !holds_alternative<BasicVar*>(*var_it->second)) {
@@ -221,6 +245,217 @@ static void write_set_elem_literal(ostream& os, const string& elem_name, bool po
         os << "(not " << elem_name << ")";
 }
 
+bool Encoder::is_visible_sat_var(int lit_num) const {
+    auto role_it = sat_var_roles.find(lit_num);
+    return role_it != sat_var_roles.end() && role_it->second == SatVarRole::VISIBLE;
+}
+
+string Encoder::smt_name_for_id(int id) const {
+    auto name_it = smt_name_by_id.find(id);
+    if(name_it != smt_name_by_id.end())
+        return name_it->second;
+
+    return "sub_" + to_string(id);
+}
+
+string Encoder::step1_witness_term(const BasicVar& var) const {
+    if(var.helper){
+        auto witness_it = step1_witness_exprs.find(var.id);
+        if(witness_it != step1_witness_exprs.end())
+            return witness_it->second;
+    }
+
+    return *var.name;
+}
+
+void Encoder::write_step1_int_witness(const BasicVar& var, const string& expr) {
+    step1_witness_exprs[var.id] = expr;
+    smt_step1_funs << "(define-fun h_" << *var.name << " () Int\n";
+    smt_step1_funs << expr << "\n)\n";
+}
+
+void Encoder::write_visible_relation_for_literal(int lit_num, const LiteralPtr& lit) {
+    if(!is_visible_sat_var(lit_num))
+        return;
+
+    if(lit->type == LiteralType::ORDER){
+        string val_string = lit->val < 0 ? ("(- " + to_string(-lit->val) + ")") : to_string(lit->val);
+        if(id_map.find(lit->id) == id_map.end()){
+            connection_formula << "(= x" << lit_num << " (<= sub_" << lit->id << " " << val_string
+                        << "))\n";
+
+            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
+            sat_smt_funs << "(<= sub_" << lit->id << " " << val_string << ")\n)" << endl;
+
+            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
+        } else {
+            auto var = get<BasicVar*>(*id_map[lit->id]);
+            connection_formula << "(= x" << lit_num << " (<= " << *var->name << " " << val_string
+                        << "))\n";
+
+            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
+            sat_smt_funs << "(<= " << *var->name << " " << val_string << ")\n)" << endl;
+
+            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
+        }
+    } else if(lit->type == LiteralType::BOOL_VARIABLE){
+        if(id_map.find(lit->id) == id_map.end()){
+            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
+            sat_smt_funs << "sub_" << lit->id << "\n)" << endl;
+
+            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
+            connection_formula << "(= x" << lit_num << " sub_" << lit->id << ")\n";
+        } else {
+            auto var = get<BasicVar*>(*id_map[lit->id]);
+            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
+            sat_smt_funs << *var->name << "\n)" << endl;
+
+            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
+            connection_formula << "(= x" << lit_num << " " << *var->name << ")\n";
+        }
+    } else if(lit->type == LiteralType::SET_ELEM){
+        string elem_name = set_elem_smt_name(id_map, lit->id, lit->val);
+        connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";
+
+        sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
+        sat_smt_funs << elem_name << "\n)\n";
+
+        left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
+    } else if(lit->type == LiteralType::DIRECT){
+        string val_string = lit->val < 0 ? ("(- " + to_string(-lit->val) + ")") : to_string(lit->val);
+        if(id_map.find(lit->id) == id_map.end()){
+            connection_formula << "(= x" << lit_num << " (= sub_" << lit->id << " " << val_string
+                        << "))\n";
+
+            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
+            sat_smt_funs << "(= sub_" << lit->id << " " << val_string << ")\n)" << endl;
+
+            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
+        } else {
+            auto var = get<BasicVar*>(*id_map[lit->id]);
+            connection_formula << "(= x" << lit_num << " (= " << *var->name << " " << val_string
+                        << "))\n";
+
+            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
+            sat_smt_funs << "(= " << *var->name << " " << val_string << ")\n)" << endl;
+
+            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
+        }
+    }
+}
+
+void Encoder::write_literal_smt_expr(ostream& out, const LiteralPtr& lit) {
+    if(lit->type == LiteralType::HELPER){
+        write_helper_smt_expr(out, lit);
+        return;
+    }
+
+    auto write_positive = [&]() {
+        if(lit->type == LiteralType::ORDER){
+            string val_string = lit->val < 0 ? ("(- " + to_string(-lit->val) + ")") : to_string(lit->val);
+            out << "(<= " << smt_name_for_id(lit->id) << " " << val_string << ")";
+        } else if(lit->type == LiteralType::BOOL_VARIABLE){
+            out << smt_name_for_id(lit->id);
+        } else if(lit->type == LiteralType::DIRECT){
+            string val_string = lit->val < 0 ? ("(- " + to_string(-lit->val) + ")") : to_string(lit->val);
+            out << "(= " << smt_name_for_id(lit->id) << " " << val_string << ")";
+        } else if(lit->type == LiteralType::SET_ELEM){
+            out << set_elem_smt_name(smt_name_for_id(lit->id), lit->val);
+        }
+    };
+
+    if(lit->pol)
+        write_positive();
+    else {
+        out << "(not ";
+        write_positive();
+        out << ")";
+    }
+}
+
+void Encoder::write_helper_smt_expr(ostream& out, const LiteralPtr& lit) {
+    auto write_clause = [&](const Clause& clause) {
+        if(clause.empty()){
+            out << "false";
+            return;
+        }
+
+        if(clause.size() > 1)
+            out << "(or ";
+        for(const auto& clause_lit : clause){
+            write_literal_smt_expr(out, clause_lit);
+            out << " ";
+        }
+        if(clause.size() > 1)
+            out << ")";
+    };
+
+    auto write_positive = [&]() {
+        CNF temp_clauses = helper_map[lit->id];
+        CNF temp_clauses1 = helper_map[-lit->id];
+
+        if(temp_clauses.empty() && temp_clauses1.empty()){
+            out << "true";
+            return;
+        }
+
+        bool needs_and = temp_clauses.size() + temp_clauses1.size() > 1;
+        if(needs_and)
+            out << "(and ";
+
+        for(const auto& clause : temp_clauses){
+            write_clause(clause);
+            out << " ";
+        }
+
+        if(temp_clauses1.size() > 1)
+            out << "(or ";
+        for(const auto& clause : temp_clauses1){
+            out << "(not ";
+            write_clause(clause);
+            out << ") ";
+        }
+        if(temp_clauses1.size() > 1)
+            out << ") ";
+
+        if(needs_and)
+            out << ")";
+    };
+
+    if(lit->pol)
+        write_positive();
+    else {
+        out << "(not ";
+        write_positive();
+        out << ")";
+    }
+}
+
+void Encoder::write_auxiliary_witnesses() {
+    ofstream defs("auxiliary_witness_defs.smt2", ios::out);
+    ofstream eqs("auxiliary_witness_eqs.smt2", ios::out);
+
+    vector<int> lit_nums;
+    lit_nums.reserve(sat_var_roles.size());
+    for(const auto& [lit_num, role] : sat_var_roles)
+        if(role == SatVarRole::AUXILIARY)
+            lit_nums.push_back(lit_num);
+
+    sort(lit_nums.begin(), lit_nums.end());
+    for(int lit_num : lit_nums){
+        auto lit_it = sat_num_to_literal.find(lit_num);
+        if(lit_it == sat_num_to_literal.end())
+            continue;
+
+        auto positive_lit = make_literal(lit_it->second->type, lit_it->second->id, true, lit_it->second->val);
+        defs << "(define-fun h_x" << lit_num << " () Bool\n";
+        write_literal_smt_expr(defs, positive_lit);
+        defs << "\n)\n";
+
+        eqs << "(= x" << lit_num << " h_x" << lit_num << ")\n";
+    }
+}
+
 //Writes the clauses currently present to a DIMACS file and clears 
 //the cnf_clauses vector
 void Encoder::write_clauses_to_dimacs_file(CNF& cnf_clauses) {
@@ -240,95 +475,23 @@ void Encoder::write_clauses_to_dimacs_file(CNF& cnf_clauses) {
 
                 lit_num = next_dimacs_num++;
                 literal_to_num[key] = lit_num;
+                sat_num_to_literal[lit_num] = l;
+                register_sat_var_role(lit_num, l);
                 if (l->type == LiteralType::ORDER || 
                     l->type == LiteralType::BOOL_VARIABLE || 
                     l->type == LiteralType::SET_ELEM)
                     num_to_literal[lit_num] = l;
 
                 if(export_proof){
-                    if(l->type == LiteralType::ORDER){
-
-                        if(id_map.find(l->id) == id_map.end()){
-                            string val_string = l->val < 0 ? ("(- " + to_string(-l->val) + ")") : to_string(l->val);
-                            connection_formula << "(= x" << lit_num << " (<= sub_" << l->id << " " << val_string
-                                        << "))\n";     
-                                        
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(<= sub_" << l->id << " " << val_string << ")\n)" << endl; 
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
-                        } else {
-                            auto var = get<BasicVar*>(*id_map[l->id]);
-                            string val_string = l->val < 0 ? ("(- " + to_string(-l->val) + ")") : to_string(l->val);
-                            connection_formula << "(= x" << lit_num << " (<= " << *var->name << " " << val_string
-                                        << "))\n";
-
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(<= " << *var->name << " " << val_string << ")\n)" << endl;
-
-                            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                        }
-                    } else if(l->type == LiteralType::BOOL_VARIABLE){
-                        if(id_map.find(l->id) == id_map.end()){
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "sub_" << l->id << "\n)" << endl; 
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";  
-                            connection_formula << "(= x" << lit_num << " sub_" << l->id << ")\n";                      
-                        } else {
-                            auto var = get<BasicVar*>(*id_map[l->id]);
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << *var->name << "\n)" << endl;
-
-                            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                            connection_formula << "(= x" << lit_num << " " << *var->name << ")\n";   
-                        }
-                    } else if(l->type == LiteralType::SET_ELEM){
+                    if(l->type == LiteralType::SET_ELEM && id_map.find(l->id) == id_map.end()){
                         string elem_name = set_elem_smt_name(id_map, l->id, l->val);
-                        if(id_map.find(l->id) == id_map.end()){
-                            connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";   
-                                          
-                            write_set_elem_literal(trivial_encoding_domains, elem_name, l->pol);
-                            trivial_encoding_domains << "\n---\n"; 
+                        write_set_elem_literal(trivial_encoding_domains, elem_name, l->pol);
+                        trivial_encoding_domains << "\n---\n";
 
-                            smt_dom_vars.back().insert(elem_name);
-                            smt_dom_vars.push_back({});
-
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << elem_name << "\n)\n";  
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
-                                            
-                        } else {
-                            connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";
-                                            
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << elem_name << "\n)\n";  
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
-                        }
-                    } else if(l->type == LiteralType::DIRECT){
-                        if(id_map.find(l->id) == id_map.end()){
-                            string val_string = l->val < 0 ? ("(- " + to_string(-l->val) + ")") : to_string(l->val);
-                            connection_formula << "(= x" << lit_num << " (= sub_" << l->id << " " << val_string
-                                        << "))\n";     
-                                        
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= sub_" << l->id << " " << val_string << ")\n)" << endl; 
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
-                        } else {
-                            auto var = get<BasicVar*>(*id_map[l->id]);
-                            string val_string = l->val < 0 ? ("(- " + to_string(-l->val) + ")") : to_string(l->val);
-                            connection_formula << "(= x" << lit_num << " (= " << *var->name << " " << val_string
-                                        << "))\n";
-
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= " << *var->name << " " << val_string << ")\n)" << endl;
-
-                            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                        }                        
+                        smt_dom_vars.back().insert(elem_name);
+                        smt_dom_vars.push_back({});
                     }
+                    write_visible_relation_for_literal(lit_num, l);
                 }
             } else {
                 lit_num = it->second;
@@ -384,6 +547,8 @@ void Encoder::write_clauses_to_smtlib_file(CNF& cnf_clauses) {
             if (it == literal_to_num.end()) {
                 lit_num = next_dimacs_num++;
                 literal_to_num[key] = lit_num;
+                sat_num_to_literal[lit_num] = l;
+                register_sat_var_role(lit_num, l);
 
                 if (l->type == LiteralType::ORDER ||
                     l->type == LiteralType::BOOL_VARIABLE ||
@@ -392,89 +557,15 @@ void Encoder::write_clauses_to_smtlib_file(CNF& cnf_clauses) {
 
 
                 if(export_proof){
-                    if(l->type == LiteralType::ORDER){
-
-                        if(id_map.find(l->id) == id_map.end()){
-                            string val_string = l->val < 0 ? ("(- " + to_string(-l->val) + ")") : to_string(l->val);
-                            connection_formula << "(= x" << lit_num << " (<= sub_" << l->id << " " << val_string
-                                        << "))\n";     
-                                        
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(<= sub_" << l->id << " " << val_string << ")\n)" << endl; 
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
-                        } else {
-                            auto var = get<BasicVar*>(*id_map[l->id]);
-                            string val_string = l->val < 0 ? ("(- " + to_string(-l->val) + ")") : to_string(l->val);
-                            connection_formula << "(= x" << lit_num << " (<= " << *var->name << " " << val_string
-                                        << "))\n";
-
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(<= " << *var->name << " " << val_string << ")\n)" << endl;
-
-                            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                        }
-                    } else if(l->type == LiteralType::BOOL_VARIABLE){
-                        if(id_map.find(l->id) == id_map.end()){
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "sub_" << l->id << "\n)" << endl; 
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";  
-                            connection_formula << "(= x" << lit_num << " sub_" << l->id << ")\n";                      
-                        } else {
-                            auto var = get<BasicVar*>(*id_map[l->id]);
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << *var->name << "\n)" << endl;
-
-                            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                            connection_formula << "(= x" << lit_num << " " << *var->name << ")\n";   
-                        }
-                    } else if(l->type == LiteralType::SET_ELEM){
+                    if(l->type == LiteralType::SET_ELEM && id_map.find(l->id) == id_map.end()){
                         string elem_name = set_elem_smt_name(id_map, l->id, l->val);
-                        if(id_map.find(l->id) == id_map.end()){
-                            connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";   
-                                          
-                            write_set_elem_literal(trivial_encoding_domains, elem_name, l->pol);
-                            trivial_encoding_domains << "\n---\n"; 
+                        write_set_elem_literal(trivial_encoding_domains, elem_name, l->pol);
+                        trivial_encoding_domains << "\n---\n";
 
-                            smt_dom_vars.back().insert(elem_name);
-                            smt_dom_vars.push_back({});
-
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << elem_name << "\n)\n";  
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
-                                            
-                        } else {
-                            connection_formula << "(= x" << lit_num << " " << elem_name << ")\n";
-                                            
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << elem_name << "\n)\n";  
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
-                        }
-                    } else if(l->type == LiteralType::DIRECT){
-                        if(id_map.find(l->id) == id_map.end()){
-                            string val_string = l->val < 0 ? ("(- " + to_string(-l->val) + ")") : to_string(l->val);
-                            connection_formula << "(= x" << lit_num << " (= sub_" << l->id << " " << val_string
-                                        << "))\n";     
-                                        
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= sub_" << l->id << " " << val_string << ")\n)" << endl; 
-
-                            left_total << "(= x" << lit_num << " " << "f_x" << lit_num << ")\n";
-                        } else {
-                            auto var = get<BasicVar*>(*id_map[l->id]);
-                            string val_string = l->val < 0 ? ("(- " + to_string(-l->val) + ")") : to_string(l->val);
-                            connection_formula << "(= x" << lit_num << " (= " << *var->name << " " << val_string
-                                        << "))\n";
-
-                            sat_smt_funs << "(define-fun f_x" << lit_num << " () Bool\n";
-                            sat_smt_funs << "(= " << *var->name << " " << val_string << ")\n)" << endl;
-
-                            left_total << "(= x" << lit_num << " f_x" << lit_num << ")\n";
-                        }                        
+                        smt_dom_vars.back().insert(elem_name);
+                        smt_dom_vars.push_back({});
                     }
+                    write_visible_relation_for_literal(lit_num, l);
                 }
             } else {
                 lit_num = it->second;
@@ -517,234 +608,11 @@ void Encoder::write_clauses_to_smtlib_file(CNF& cnf_clauses) {
     CNF().swap(cnf_clauses);
 }
 
-void Encoder::write_lit_definition_clauses_smt_subspace(LiteralPtr lit){
-
-    if(lit->type == SET_ELEM){
-        string elem_name = set_elem_smt_name(id_map, lit->id, lit->val);
-        if(id_map.find(lit->id) != id_map.end()){
-            write_set_elem_literal(smt_subspace, elem_name, lit->pol);
-            smt_subspace << "\n";
-
-            smt_subspace_vars.back().insert(elem_name);
-        } else {
-            write_set_elem_literal(smt_subspace, elem_name, lit->pol);
-            smt_subspace << "\n";
-                                
-            smt_subspace_vars.back().insert(elem_name);
-        }        
-        return;
-    }
-
-    if(lit->type == LiteralType::BOOL_VARIABLE){
-        if(id_map.find(lit->id) != id_map.end()){
-            auto var = get<BasicVar*>(*id_map[lit->id]);
-            if(lit->pol)
-                smt_subspace << *var->name << " ";
-            else
-                smt_subspace << "(not " << *var->name << ") ";
-
-            smt_subspace_vars.back().insert(*var->name);
-        } else {
-            if(lit->pol)
-                smt_subspace << "sub_" << lit->id << " ";
-            else
-                smt_subspace << "(not sub_" << lit->id << ") ";   
-                
-            smt_subspace_vars.back().insert("sub_" + to_string(lit->id));
-        }
-        return;
-    }
-
-
-    CNF temp_clauses = helper_map[lit->id];
-
-    if(temp_clauses.empty())
-        return;
-
-    Clause todo_lits;
-
-    bool should_not = false;
-    if(lit->pol == false){
-        smt_subspace << "(not ";
-        should_not = true;
-    }
-
-    smt_subspace << "(and\n";
-    for(auto clause : temp_clauses){ 
-        
-        bool should_or = false;
-        int counter = 0;
-        for(auto lit : clause){
-                counter++;
-                if(counter == 2){
-                    should_or = true;
-                    break;
-                }
-        }
-
-        if(should_or)
-            smt_subspace << "(or ";
-
-        for(auto l : clause){
-
-            if(l->type == LiteralType::ORDER){
-                
-                string num_string = (l->val < 0) ? "(- " + to_string(-l->val) + ")" : to_string(l->val);
-
-                if(id_map.find(l->id) != id_map.end()){
-                    auto var = get<BasicVar*>(*id_map[l->id]);
-
-                    if(l->pol)
-                        smt_subspace << "(<= " << *var->name << " " << num_string << ") ";
-                    else    
-                        smt_subspace << "(not (<= " << *var->name << " " << num_string << ")) ";
-
-                    smt_subspace_vars.back().insert(*var->name);
-                } else {
-                    if(l->pol)
-                        smt_subspace << "(<= sub_" << l->id << " " << num_string << ") ";
-                    else    
-                        smt_subspace << "(not (<= sub_" << l->id << " " << num_string << ")) ";   
-                        
-                    smt_subspace_vars.back().insert("sub_" + to_string(l->id));
-                }
-                
-            } else if(l->type == LiteralType::BOOL_VARIABLE){
-                if(id_map.find(l->id) != id_map.end()){
-                    auto var = get<BasicVar*>(*id_map[l->id]);
-                    if(l->pol)
-                        smt_subspace << *var->name << " ";
-                    else
-                        smt_subspace << "(not " << *var->name << ") ";
-
-                    smt_subspace_vars.back().insert(*var->name);
-                } else {
-                    if(l->pol)
-                        smt_subspace << "sub_" << l->id << " ";
-                    else
-                        smt_subspace << "(not sub_" << l->id << ") ";   
-                        
-                    smt_subspace_vars.back().insert("sub_" + to_string(l->id));
-                }
-            } else if(l->type == LiteralType::DIRECT){
-                string num_string = (l->val < 0) ? "(- " + to_string(-l->val) + ")" : to_string(l->val);
-                if(id_map.find(l->id) != id_map.end()){
-                    auto var = get<BasicVar*>(*id_map[l->id]);
-                    if(l->pol)
-                        smt_subspace << "(= " << *var->name << " " << num_string << ") ";
-                    else
-                        smt_subspace << "(not (= " << *var->name << " " << num_string << ")) ";
-
-                    smt_subspace_vars.back().insert(*var->name);
-                } else {
-                    if(l->pol)
-                        smt_subspace << "(= sub_" << l->id << " " << num_string << ") ";
-                    else
-                        smt_subspace << "(not (= sub_" << l->id << " " << num_string << ")) ";
-
-                    smt_subspace_vars.back().insert("sub_" + to_string(l->id));                  
-                }                
-            }else if(l->type == LiteralType::SET_ELEM){
-                string elem_name = set_elem_smt_name(id_map, l->id, l->val);
-                if(id_map.find(l->id) != id_map.end()){
-                    write_set_elem_literal(smt_subspace, elem_name, l->pol);
-                    smt_subspace << "\n";
-
-                    smt_subspace_vars.back().insert(elem_name);
-                } else {
-                    write_set_elem_literal(smt_subspace, elem_name, l->pol);
-                    smt_subspace << "\n";
-                                     
-                    smt_subspace_vars.back().insert(elem_name);
-                }
-                
-            } else if(l->type == LiteralType::HELPER){
-                write_lit_definition_clauses_smt_subspace(l);
-            }
-        }
-
-        if(should_or)
-            smt_subspace << ")" << endl;
-    }
-
-
-
-    if(should_not)
-        smt_subspace << ")";
-    smt_subspace << ")" << endl;
-}
-
-void Encoder::write_lit_definition_clauses_sat_subspace(LiteralPtr lit){
-
-    if(lit->type == LiteralType::BOOL_VARIABLE)
-        return;
-
-    int lit_num = literal_to_num[{lit->type, lit->id, lit->val}];
-
-    if(visited_lits.find(lit_num) != visited_lits.end())
-        return;
-
-    CNF temp_clauses = helper_map[lit->id];
-    CNF temp_clauses1 = helper_map[-lit->id];
-
-    if(temp_clauses.empty() && temp_clauses1.empty())
-        return;
-
-    visited_lits.insert(lit_num);
-    Clause todo_lits;
-
-    for(auto clause : temp_clauses){
-
-        sat_subspace << "(or (not x" << lit_num << ") "; 
-        sat_subspace_vars.back().insert("x" + to_string(lit_num));
-        
-        for(auto l : clause){
-
-            int lit_num1 = literal_to_num[{l->type, l->id, l->val}];
-            if(l->pol)
-                sat_subspace << "x" << lit_num1 << " ";
-            else
-                sat_subspace << "(not x" << lit_num1 << ") "; 
-
-            sat_subspace_vars.back().insert("x" + to_string(lit_num1));
-
-            if(l->type == LiteralType::HELPER && visited_lits.find(lit_num1) == visited_lits.end())
-                todo_lits.push_back(l);
-        }
-
-        sat_subspace << ")" << endl;
-    }
-
-    for(auto clause : temp_clauses1){
-
-        sat_subspace << "(or x" << lit_num << " "; 
-        sat_subspace_vars.back().insert("x" + to_string(lit_num));
-        
-        for(auto l : clause){
-
-            int lit_num1 = literal_to_num[{l->type, l->id, l->val}];
-            if(l->pol)
-                sat_subspace << "x" << lit_num1 << " ";
-            else
-                sat_subspace << "(not x" << lit_num1 << ") "; 
-
-            sat_subspace_vars.back().insert("x" + to_string(lit_num));
-
-            if(l->type == LiteralType::HELPER && visited_lits.find(lit_num1) == visited_lits.end())
-                todo_lits.push_back(l);
-        }
-
-        sat_subspace << ")" << endl;
-    }
-
-    for(auto l : todo_lits)
-        write_lit_definition_clauses_sat_subspace(l);
-}
-
 void Encoder::write_lit_definition_clauses_fun(LiteralPtr lit, bool should_define_fun){
 
 
-    if(lit->type == LiteralType::BOOL_VARIABLE)
+    if(lit->type == LiteralType::BOOL_VARIABLE ||
+       (lit->type == LiteralType::HELPER && should_define_fun))
         return;
 
     CNF temp_clauses = helper_map[lit->id];
@@ -967,40 +835,15 @@ void Encoder::write_definition_clauses() {
 
         Clause temp_clause;
 
-        if(clause.size() > 1)
-            smt_subspace << "(or ";
         for(const auto& lit : clause){
 
             int lit_num = literal_to_num[{lit->type, lit->id, lit->val}];
-
-            write_lit_definition_clauses_smt_subspace(lit);
-            write_lit_definition_clauses_sat_subspace(lit);
 
             if(visited_lits1.find(lit_num) == visited_lits1.end())
                 write_lit_definition_clauses_fun(lit, true);
 
             temp_clause.push_back(lit);
         }
-        if(clause.size() > 1)
-            smt_subspace << ")";
-        smt_subspace << endl;
-
-        if(temp_clause.size() > 1)
-            sat_subspace << "(or ";
-        for(auto l : temp_clause){
-            int lit_num = literal_to_num[{l->type, l->id, l->val}];
-
-            if(l->pol)
-                sat_subspace << "x" << lit_num << " ";
-            else
-                sat_subspace << "(not x" << lit_num << ") ";
-
-            sat_subspace_vars.back().insert("x" + to_string(lit_num));
-        }
-        if(temp_clause.size() > 1)
-            sat_subspace << ")" << endl;
-        else
-            sat_subspace << endl;
     }
 
     for(auto l : todo_lits){
@@ -1009,11 +852,6 @@ void Encoder::write_definition_clauses() {
             continue;
         write_lit_definition_clauses_fun(l, true);  
     }
-
-    sat_subspace << "---" << endl;
-    sat_subspace_vars.push_back({});
-    smt_subspace << "---" << endl;
-    smt_subspace_vars.push_back({});
 
     todo_lits.clear();
     definition_clauses.clear();
@@ -1059,8 +897,6 @@ void Encoder::write_sat_dom_clauses(CNF& clauses) {
 
         if(clause.size() == 0){
             sat_dom << "false\n---" << endl;
-            sat_subspace << "false\n---" << endl;
-            sat_subspace_vars.push_back({});
             sat_dom_vars.push_back({});
             continue;
         }
@@ -1072,21 +908,19 @@ void Encoder::write_sat_dom_clauses(CNF& clauses) {
             curr_name = "sub_" + to_string(clause[0]->id);
 
         if(curr_var != curr_name && curr_var != ""){
-            sat_subspace << "---" << endl;
-            sat_subspace_vars.push_back({});
             sat_dom << "---" << endl;
             sat_dom_vars.push_back({});
         }
 
-        if(clause.size() > 1){
+        if(clause.size() > 1)
             sat_dom << "(or ";
-            sat_subspace << "(or ";
-        }
         for(const auto& lit : clause){
             
             if(curr_var != curr_name){
 
                 curr_var = curr_name;
+
+                int first_lit_num = literal_to_num[{lit->type, lit->id, lit->val}];
 
                 if(lit->type == LiteralType::ORDER){
                     smt_sat_funs << "(define-fun g_" << curr_var << " () Int\n";
@@ -1095,7 +929,6 @@ void Encoder::write_sat_dom_clauses(CNF& clauses) {
                     auto next_lit = clauses[i+1][0];
                     int right = next_lit->val;
 
-                    int first_lit_num = literal_to_num[{lit->type, lit->id, lit->val}];
                     string num_string = left < 0 ? "(- " + to_string(-left) + ")" : to_string(left);
 
                     smt_sat_funs << "(ite x" << first_lit_num << " " << num_string << " ";
@@ -1117,18 +950,10 @@ void Encoder::write_sat_dom_clauses(CNF& clauses) {
                 } else if(lit->type == LiteralType::BOOL_VARIABLE){
                     smt_sat_funs << "(define-fun g_" << curr_var << " () Bool\n";
 
-                    smt_sat_funs << "x" << literal_to_num[{lit->type, lit->id, lit->val}];
+                    smt_sat_funs << "x" << first_lit_num;
                     smt_sat_funs << "\n)" << endl;
 
                     right_total << "(= " << curr_var << " g_" << curr_var << ")\n";
-                } else if(lit->type == LiteralType::SET_ELEM){
-                    int lit_num = literal_to_num[{lit->type, lit->id, lit->val}];
-                    if(lit->pol == true)
-                        sat_subspace << "(= x" << lit_num << " true)" << endl;
-                    else
-                        sat_subspace << "(= x" << lit_num << " false)" << endl;  
-
-                    sat_subspace_vars.back().insert("x" + to_string(lit_num));
                 }                
 
 
@@ -1137,27 +962,19 @@ void Encoder::write_sat_dom_clauses(CNF& clauses) {
             int lit_num = literal_to_num[{lit->type, lit->id, lit->val}];
             if(lit->pol){
                 sat_dom << "x" << lit_num << " ";
-                sat_subspace << "x" << lit_num << " ";
             } else {
                 sat_dom << "(not x" << lit_num << ") ";
-                sat_subspace << "(not x" << lit_num << ") ";
             }
 
-            sat_subspace_vars.back().insert("x" + to_string(lit_num));
             sat_dom_vars.back().insert("x" + to_string(lit_num));
         }
-        if(clause.size() > 1){
+        if(clause.size() > 1)
             sat_dom << ")";
-            sat_subspace << ")";
-        }
         sat_dom << endl;
-        sat_subspace << endl;
     }
 
     if(!clauses.empty()){
         sat_dom << "---" << endl;
-        sat_subspace << "---" << endl;
-        sat_subspace_vars.push_back({});
         sat_dom_vars.push_back({});
     }
     
@@ -1273,12 +1090,12 @@ void Encoder::flush_buffers(){
     trivial_encoding_constraints.flush();
     trivial_encoding_domains.flush();
     connection_formula.flush();
+    sat_dom.flush();
+    sat_constraints.flush();
     sat_smt_funs.flush();
     smt_sat_funs.flush();
     left_total.flush();
     right_total.flush();
-    smt_subspace.flush();
-    sat_subspace.flush();
 
     if(is2step){
         connection2step.flush();
@@ -1286,8 +1103,7 @@ void Encoder::flush_buffers(){
         constraints2step1.flush();
         constraints2step2.flush();
         smt_step1_funs.flush();
-        left_total_step1.flush();
-        smt_subspace_step1.flush();
+        step1_auxiliary_witnesses.flush();
     }
 }
 
@@ -1329,8 +1145,6 @@ IntSatToSmtIndex intern_var_pairs(
 InternedProofVars build_interned_proof_vars(
     const vector<unordered_set<string>>& smt_dom,
     const vector<unordered_set<string>>& sat_dom,
-    const vector<unordered_set<string>>& smt_subspace,
-    const vector<unordered_set<string>>& sat_subspace,
     const vector<unordered_set<string>>& smt_constraints,
     const vector<unordered_set<string>>& sat_constraints,
     const vector<unordered_set<string>>& smt_sat_rel,
@@ -1341,8 +1155,6 @@ InternedProofVars build_interned_proof_vars(
 
     interned.smt_dom = intern_chunks(smt_dom, ids);
     interned.sat_dom = intern_chunks(sat_dom, ids);
-    interned.smt_subspace = intern_chunks(smt_subspace, ids);
-    interned.sat_subspace = intern_chunks(sat_subspace, ids);
     interned.smt_constraints = intern_chunks(smt_constraints, ids);
     interned.sat_constraints = intern_chunks(sat_constraints, ids);
     interned.smt_sat_rel = intern_chunks(smt_sat_rel, ids);
@@ -1501,6 +1313,152 @@ VarLineCache build_var_line_cache(const string& path) {
     return cache;
 }
 
+unordered_set<string> extract_symbol_tokens(const string& line) {
+    static const unordered_set<string> ignored = {
+        "and", "or", "not", "ite", "true", "false", "define", "fun", "Bool", "Int"
+    };
+
+    unordered_set<string> tokens;
+    string token;
+
+    auto flush_token = [&]() {
+        if(token.empty())
+            return;
+
+        if(!isdigit(token[0]) && ignored.find(token) == ignored.end())
+            tokens.insert(token);
+
+        token.clear();
+    };
+
+    for(char ch : line) {
+        if(isalnum((unsigned char)ch) || ch == '_' || ch == '.') {
+            token.push_back(ch);
+        } else {
+            flush_token();
+        }
+    }
+    flush_token();
+
+    return tokens;
+}
+
+unordered_map<string, unordered_set<string>> build_define_fun_dependency_cache(
+    const string& path,
+    const string& function_prefix,
+    bool keep_only_sat_vars
+) {
+    unordered_map<string, unordered_set<string>> deps_by_var;
+    ifstream file(path);
+    string line;
+    string current_key;
+    int paren_depth = 0;
+
+    auto paren_delta = [](const string& text) {
+        int delta = 0;
+        for(char ch : text) {
+            if(ch == '(')
+                delta++;
+            else if(ch == ')')
+                delta--;
+        }
+        return delta;
+    };
+
+    while(getline(file, line)) {
+        if(line.rfind("(define-fun " + function_prefix, 0) == 0) {
+            stringstream ss(line);
+            string token;
+
+            ss >> token; // (define-fun
+            ss >> token; // function name
+
+            current_key = token.substr(function_prefix.size());
+            deps_by_var[current_key];
+            paren_depth = paren_delta(line);
+            continue;
+        }
+
+        if(current_key.empty())
+            continue;
+
+        for(const auto& token : extract_symbol_tokens(line)) {
+            if(keep_only_sat_vars && (token.size() < 2 || token[0] != 'x' || !isdigit(token[1])))
+                continue;
+            deps_by_var[current_key].insert(token);
+        }
+
+        paren_depth += paren_delta(line);
+        if(paren_depth <= 0) {
+            current_key.clear();
+            paren_depth = 0;
+        }
+    }
+
+    return deps_by_var;
+}
+
+unordered_set<string> collect_dependency_vars(
+    const unordered_set<string>& vars,
+    const unordered_map<string, unordered_set<string>>& deps_by_var
+) {
+    unordered_set<string> deps;
+
+    for(const auto& var : vars) {
+        auto it = deps_by_var.find(var);
+        if(it == deps_by_var.end())
+            continue;
+
+        deps.insert(it->second.begin(), it->second.end());
+    }
+
+    return deps;
+}
+
+vector<int> collect_related_chunk_ids(
+    const unordered_set<string>& vars,
+    const unordered_map<string, vector<int>>& index,
+    int max_exclusive
+) {
+    vector<char> seen(max_exclusive, false);
+
+    for(const auto& var : vars) {
+        auto it = index.find(var);
+        if(it == index.end())
+            continue;
+
+        for(int id : it->second)
+            if(id > 0 && id < max_exclusive)
+                seen[id] = true;
+    }
+
+    vector<int> ids;
+    for(int id = 1; id < max_exclusive; id++)
+        if(seen[id])
+            ids.push_back(id);
+
+    return ids;
+}
+
+unordered_map<string, vector<int>> build_string_chunk_index(
+    const vector<unordered_set<string>>& chunks
+) {
+    unordered_map<string, vector<int>> index;
+
+    for(int i = 0; i < (int)chunks.size(); i++)
+        for(const auto& var : chunks[i])
+            index[var].push_back(i + 1);
+
+    return index;
+}
+
+vector<int> merge_ids(vector<int> left, const vector<int>& right) {
+    left.insert(left.end(), right.begin(), right.end());
+    sort(left.begin(), left.end());
+    left.erase(unique(left.begin(), left.end()), left.end());
+    return left;
+}
+
 void write_cached_lines_for_vars(
     ofstream& out,
     const VarLineCache& cache,
@@ -1521,6 +1479,231 @@ void write_cached_lines_for_vars(
 
     for(int line_id : line_ids)
         out << cache.lines[line_id] << "\n";
+}
+
+void add_vars_from_chunks(
+    unordered_set<string>& vars,
+    const vector<unordered_set<string>>& chunks
+) {
+    for(const auto& chunk : chunks)
+        vars.insert(chunk.begin(), chunk.end());
+}
+
+bool chunk_mentions_any(
+    const unordered_set<string>& chunk,
+    const unordered_set<string>& vars
+) {
+    for(const auto& var : chunk)
+        if(vars.find(var) != vars.end())
+            return true;
+
+    return false;
+}
+
+void write_new_theory_proofs(
+    const string& prelude_file,
+    int sat_dom_num,
+    int smt_dom_num,
+    int smt_sat_rel_num,
+    int next_constraint_num,
+    const vector<unordered_set<string>>& sat_dom_vars,
+    const vector<unordered_set<string>>& smt_dom_vars,
+    const vector<unordered_set<string>>& sat_constraints_vars,
+    const vector<unordered_set<string>>& smt_constraints_vars,
+    const vector<unordered_set<string>>& smt_sat_rel_vars,
+    const InternedProofVars& interned_vars,
+    const IntChunkIndex& sat_dom_index,
+    const IntChunkIndex& smt_dom_index,
+    const IntChunkIndex& smt_sat_rel_index,
+    const IntChunkIndex& mapped_sat_dom_index,
+    const unordered_set<string>& visible_sat_vars,
+    const unordered_set<string>& visible_smt_vars,
+    const VarLineCache& left_total_cache,
+    const VarLineCache& right_total_cache,
+    const VarLineCache& auxiliary_witness_cache,
+    const unordered_map<string, unordered_set<string>>& auxiliary_witness_smt_deps,
+    const unordered_map<string, unordered_set<string>>& smt_constraint_deps
+) {
+    auto smt_dom_string_index = build_string_chunk_index(smt_dom_vars);
+    auto sat_dom_string_index = build_string_chunk_index(sat_dom_vars);
+
+    system("rm -f left_total_proof.smt2");
+    ofstream left_total_proof = ofstream("left_total_proof.smt2", ios::app);
+
+    system(("cat " + prelude_file + " >> left_total_proof.smt2").c_str());
+
+    for(int i = 1; i < sat_dom_num && i <= (int)sat_dom_vars.size(); i++){
+        if(!chunk_mentions_any(sat_dom_vars[i-1], visible_sat_vars))
+            continue;
+
+        left_total_proof << "(push)\n";
+        left_total_proof << "(echo \"Check left-total dom" << i << "\")\n";
+        left_total_proof << "(assert (and\n";
+
+        for(int j : collect_mapped_related_ids(interned_vars.sat_dom[i-1], smt_dom_index, interned_vars.sat_to_smt, smt_dom_num))
+            left_total_proof << "smt_dom" << j << "\n";
+
+        write_cached_lines_for_vars(left_total_proof, left_total_cache, sat_dom_vars[i-1]);
+
+        left_total_proof << "(not sat_dom" << i << ")\n";
+        left_total_proof << ")\n)\n";
+        left_total_proof << "(check-sat)\n";
+        left_total_proof << "(set-option :regular-output-channel \"left_total_dom" << i << "_proof.out\")\n";
+        left_total_proof << "(get-proof)\n";
+        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        left_total_proof << "(pop)\n\n";
+    }
+
+    for(int i = 1; i < smt_sat_rel_num && i <= (int)smt_sat_rel_vars.size(); i++){
+        left_total_proof << "(push)\n";
+        left_total_proof << "(echo \"Check left-total R" << i << "\")\n";
+        left_total_proof << "(assert (and\n";
+
+        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], smt_dom_index, smt_dom_num))
+            left_total_proof << "smt_dom" << j << "\n";
+
+        write_cached_lines_for_vars(left_total_proof, left_total_cache, smt_sat_rel_vars[i-1]);
+
+        left_total_proof << "(not smt_sat_rel" << i << ")\n";
+        left_total_proof << ")\n)\n";
+        left_total_proof << "(check-sat)\n";
+        left_total_proof << "(set-option :regular-output-channel \"left_total_r" << i << "_proof.out\")\n";
+        left_total_proof << "(get-proof)\n";
+        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        left_total_proof << "(pop)\n\n";
+    }
+
+    left_total_proof.close();
+
+    system("rm -f right_total_proof.smt2");
+    ofstream right_total_proof = ofstream("right_total_proof.smt2", ios::app);
+
+    system(("cat " + prelude_file + " >> right_total_proof.smt2").c_str());
+
+    for(int i = 1; i < smt_dom_num && i <= (int)smt_dom_vars.size(); i++){
+        if(!chunk_mentions_any(smt_dom_vars[i-1], visible_smt_vars))
+            continue;
+
+        right_total_proof << "(push)\n";
+        right_total_proof << "(echo \"Check right-total dom" << i << "\")\n";
+        right_total_proof << "(assert (and\n";
+
+        for(int j : collect_related_ids(interned_vars.smt_dom[i-1], mapped_sat_dom_index, sat_dom_num))
+            right_total_proof << "sat_dom" << j << "\n";
+
+        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_dom_vars[i-1]);
+
+        right_total_proof << "(not smt_dom" << i << ")\n";
+        right_total_proof << ")\n)\n";
+        right_total_proof << "(check-sat)\n";
+        right_total_proof << "(set-option :regular-output-channel \"right_total_dom" << i << "_proof.out\")\n";
+        right_total_proof << "(get-proof)\n";
+        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        right_total_proof << "(pop)\n\n";
+    }
+
+    for(int i = 1; i < smt_sat_rel_num && i <= (int)smt_sat_rel_vars.size(); i++){
+        right_total_proof << "(push)\n";
+        right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
+        right_total_proof << "(assert (and\n";
+
+        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], mapped_sat_dom_index, sat_dom_num))
+            right_total_proof << "sat_dom" << j << "\n";
+
+        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_sat_rel_vars[i-1]);
+
+        right_total_proof << "(not smt_sat_rel" << i << ")\n";
+        right_total_proof << ")\n)\n";
+        right_total_proof << "(check-sat)\n";
+        right_total_proof << "(set-option :regular-output-channel \"right_total_r" << i << "_proof.out\")\n";
+        right_total_proof << "(get-proof)\n";
+        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        right_total_proof << "(pop)\n\n";
+    }
+
+    right_total_proof.close();
+
+    system("rm -f soundness_right_proof.smt2");
+    ofstream soundness_right_proof = ofstream("soundness_right_proof.smt2", ios::app);
+
+    system(("cat " + prelude_file + " >> soundness_right_proof.smt2").c_str());
+
+    for(int i = 1; i < next_constraint_num; i++){
+        soundness_right_proof << "(push)\n";
+        soundness_right_proof << "(echo \"Check soundness-right c" << i << "\")\n";
+        soundness_right_proof << "(assert (and\n";
+
+        unordered_set<string> smt_formula_vars = smt_constraints_vars[i-1];
+        auto smt_constraint_dep_it = smt_constraint_deps.find(to_string(i));
+        if(smt_constraint_dep_it != smt_constraint_deps.end())
+            smt_formula_vars.insert(smt_constraint_dep_it->second.begin(), smt_constraint_dep_it->second.end());
+
+        for(int j : collect_related_chunk_ids(smt_formula_vars, smt_dom_string_index, smt_dom_num))
+            soundness_right_proof << "smt_dom" << j << "\n";
+
+        auto related_sat_dom_ids = collect_related_ids(interned_vars.sat_constraints[i-1], sat_dom_index, sat_dom_num);
+
+        for(int j : related_sat_dom_ids)
+            soundness_right_proof << "sat_dom" << j << "\n";
+
+        soundness_right_proof << "sat_c" << i << "\n";
+
+        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
+            soundness_right_proof << "smt_sat_rel" << j << "\n";
+
+        soundness_right_proof << "(not smt_c" << i << ")\n";
+        soundness_right_proof << ")\n";
+        soundness_right_proof << ")\n";
+        soundness_right_proof << "(check-sat)\n";
+        soundness_right_proof << "(set-option :regular-output-channel \"soundness_right_proof_c" << i <<".out\")\n";
+        soundness_right_proof << "(get-proof)\n";
+        soundness_right_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        soundness_right_proof << "(pop)\n\n";
+    }
+
+    soundness_right_proof.close();
+
+    system("rm -f soundness_left_proof.smt2");
+    ofstream soundness_left_proof = ofstream("soundness_left_proof.smt2", ios::app);
+
+    system(("cat " + prelude_file + " >> soundness_left_proof.smt2").c_str());
+
+    for(int i = 1; i < next_constraint_num; i++){
+        soundness_left_proof << "(push)\n";
+        soundness_left_proof << "(echo \"Check soundness-left c" << i << "\")\n";
+        soundness_left_proof << "(assert (and\n";
+
+        auto witness_smt_vars = collect_dependency_vars(sat_constraints_vars[i-1], auxiliary_witness_smt_deps);
+        auto related_smt_dom_ids = collect_related_ids(interned_vars.smt_constraints[i-1], smt_dom_index, smt_dom_num);
+        related_smt_dom_ids = merge_ids(
+            related_smt_dom_ids,
+            collect_related_chunk_ids(witness_smt_vars, smt_dom_string_index, smt_dom_num)
+        );
+
+        for(int j : related_smt_dom_ids)
+            soundness_left_proof << "smt_dom" << j << "\n";
+
+        soundness_left_proof << "smt_c" << i << "\n";
+
+        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], sat_dom_index, sat_dom_num))
+            soundness_left_proof << "sat_dom" << j << "\n";
+
+        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
+            soundness_left_proof << "smt_sat_rel" << j << "\n";
+
+        write_cached_lines_for_vars(soundness_left_proof, auxiliary_witness_cache, sat_constraints_vars[i-1]);
+
+        soundness_left_proof << "(not sat_c" << i << ")\n";
+        soundness_left_proof << ")\n";
+        soundness_left_proof << ")\n";
+        soundness_left_proof << "(check-sat)\n";
+        soundness_left_proof << "(set-option :regular-output-channel \"soundness_left_proof_c" << i << ".out\")\n";
+        soundness_left_proof << "(get-proof)\n";
+        soundness_left_proof << "(set-option :regular-output-channel \"stdout\")\n";
+        soundness_left_proof << "(pop)\n\n";
+    }
+
+    soundness_left_proof.close();
 }
 
 void write_proof_bodies(
@@ -1581,6 +1764,7 @@ void Encoder::generate_proof(){
     handle_set_in_constraints();
     flush_buffers();
 
+    proof_file.flush();
     system("cat trivial_encoding_vars.smt2 >> proof.smt2");
 
     int num_vars = 0;
@@ -1626,6 +1810,7 @@ void Encoder::generate_proof(){
         proof_file << ")" << endl;
     }
 
+    proof_file.flush();
     system("cat trivial_encoding_constraints.smt2 >> proof.smt2");
 
     proof_file << "(define-fun smt_encode () Bool\n";
@@ -1732,79 +1917,23 @@ void Encoder::generate_proof(){
         proof_file << ")\n";
     proof_file << ")\n";
 
-    ifstream smt_subspace_reader = ifstream("smt_subspace.smt2");
-    if(std::filesystem::file_size("smt_subspace.smt2") > 0)
-        proof_file << "(define-fun smt_subspace" << smt_subspace_num++ << " () Bool\n(and\n"; 
-
-    should_define_fun = false;
-    while(getline(smt_subspace_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun smt_subspace" << smt_subspace_num++ << " () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        if(line == "---"){
-            proof_file << ")\n)\n";
-            should_define_fun = true;    
-        } else
-            proof_file << line << endl;
-    }
-
-    proof_file << "(define-fun smt_subspace () Bool\n";
-    if(smt_subspace_num == 1){
-        proof_file << "true\n)" << endl;
-    } else {
-        if(smt_subspace_num > 2)
-            proof_file << "(and\n";
-        for(int i = 1; i < smt_subspace_num; i++)
-            proof_file << "smt_subspace" << i << "\n";
-        if(smt_subspace_num > 2)
-            proof_file << ")\n";
-        proof_file << ")\n";
-    }
-
-    ifstream sat_subspace_reader = ifstream("sat_subspace.smt2");
-    if(std::filesystem::file_size("sat_subspace.smt2") > 0)
-        proof_file << "(define-fun sat_subspace" << sat_subspace_num++ << " () Bool\n(and\n"; 
-
-    should_define_fun = false;
-    while(getline(sat_subspace_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun sat_subspace" << sat_subspace_num++ << " () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        if(line == "---"){
-            proof_file << ")\n)\n";
-            should_define_fun = true;    
-        } else
-            proof_file << line << endl;
-    }
-
-    proof_file << "(define-fun sat_subspace () Bool\n";
-    if(sat_subspace_num == 1){
-        proof_file << "true\n)" << endl;
-    } else {
-        if(sat_subspace_num > 2)
-            proof_file << "(and\n";
-        for(int i = 1; i < sat_subspace_num; i++)
-            proof_file << "sat_subspace" << i << "\n";
-        if(sat_subspace_num > 2)
-            proof_file << ")\n";
-        proof_file << ")" << endl;
-    }
-
+    proof_file.flush();
     system("cat sat_smt_funs.smt2 >> proof.smt2");
 
+    proof_file.flush();
     system("cat smt_sat_funs.smt2 >> proof.smt2");
+
+    write_auxiliary_witnesses();
+    proof_file.flush();
+    system("cat auxiliary_witness_defs.smt2 >> proof.smt2");
+    auto auxiliary_witness_cache = build_var_line_cache("auxiliary_witness_eqs.smt2");
+    auto auxiliary_witness_smt_deps = build_define_fun_dependency_cache("auxiliary_witness_defs.smt2", "h_", false);
+    proof_file.flush();
+    auto smt_constraint_deps = build_define_fun_dependency_cache("proof.smt2", "smt_c", false);
 
     auto interned_vars = build_interned_proof_vars(
         smt_dom_vars,
         sat_dom_vars,
-        smt_subspace_vars,
-        sat_subspace_vars,
         smt_constraints_vars,
         sat_constraints_vars,
         smt_sat_rel_vars,
@@ -1812,256 +1941,73 @@ void Encoder::generate_proof(){
     );
     auto smt_dom_index = build_var_chunk_index(interned_vars.smt_dom);
     auto sat_dom_index = build_var_chunk_index(interned_vars.sat_dom);
-    auto smt_subspace_index = build_var_chunk_index(interned_vars.smt_subspace);
-    auto sat_subspace_index = build_var_chunk_index(interned_vars.sat_subspace);
-    auto smt_constraints_index = build_var_chunk_index(interned_vars.smt_constraints);
-    auto sat_constraints_index = build_var_chunk_index(interned_vars.sat_constraints);
     auto smt_sat_rel_index = build_var_chunk_index(interned_vars.smt_sat_rel);
-    auto mapped_sat_subspace_index = build_mapped_sat_chunk_index(interned_vars.sat_subspace, interned_vars.sat_to_smt);
     auto mapped_sat_dom_index = build_mapped_sat_chunk_index(interned_vars.sat_dom, interned_vars.sat_to_smt);
 
     proof_file.flush();
 
-    system("rm -f smt_containing_proof.smt2");
-    ofstream smt_containing_proof = ofstream("smt_containing_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> smt_containing_proof.smt2");
-
-    for(int i = 1; i < smt_subspace_num; i++){
-        smt_containing_proof << "(push)\n";
-        smt_containing_proof << "(echo \"Check SMT containing " << i << "\")\n";
-        smt_containing_proof << "(assert (and\n";
-        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], smt_dom_index, smt_dom_num))
-            smt_containing_proof << "smt_dom" << j << "\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], smt_constraints_index, next_constraint_num)){
-            smt_containing_proof << "smt_c" << j  << "\n";
-            for(int k : collect_related_ids(interned_vars.smt_constraints[j-1], smt_dom_index, smt_dom_num))
-                smt_containing_proof << "smt_dom" << k << "\n";
-        }
-        smt_containing_proof << "(not smt_subspace" << i << ")))\n";
-        smt_containing_proof << "(check-sat)\n";
-        smt_containing_proof << "(set-option :regular-output-channel \"smt_containing_proof" << i <<".out\")\n";
-        smt_containing_proof << "(get-proof)\n";
-        smt_containing_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        smt_containing_proof << "(pop)\n\n";
-
-    }
-
-    smt_containing_proof.close();
-
-    system("rm -f sat_containing_proof.smt2");
-    ofstream sat_containing_proof = ofstream("sat_containing_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> sat_containing_proof.smt2");
-
-    for(int i = 1; i < sat_subspace_num; i++){
-        sat_containing_proof << "(push)\n";
-        sat_containing_proof << "(echo \"Check SAT containing " << i << "\")\n";
-        sat_containing_proof << "(assert (and\n";
-        for(int j : collect_related_ids(interned_vars.sat_subspace[i-1], sat_dom_index, sat_dom_num))
-            sat_containing_proof << "sat_dom" << j << "\n";
-        for(int j : collect_related_ids(interned_vars.sat_subspace[i-1], sat_constraints_index, next_constraint_num))
-            sat_containing_proof << "sat_c" << j << "\n";
-        sat_containing_proof << "(not sat_subspace" << i << ")))\n";
-        sat_containing_proof << "(check-sat)\n";
-        sat_containing_proof << "(set-option :regular-output-channel \"sat_containing_proof" << i <<".out\")\n";
-        sat_containing_proof << "(get-proof)\n";
-        sat_containing_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        sat_containing_proof << "(pop)\n\n";
-
-    }
-
-    sat_containing_proof.close();
-
-    system("rm -f left_total_proof.smt2");
-    ofstream left_total_proof = ofstream("left_total_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> left_total_proof.smt2");
-
     auto left_total_cache = build_var_line_cache("left_total.smt2");
 
-    for(int i = 1; i < smt_sat_rel_num; i++){
-        left_total_proof << "(push)\n";
-        left_total_proof << "(echo \"Check left-total R" << i << "\")\n";
-        left_total_proof << "(assert (and\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], smt_subspace_index, smt_subspace_num))
-            left_total_proof << "smt_subspace" << j << "\n";
-
-        write_cached_lines_for_vars(left_total_proof, left_total_cache, smt_sat_rel_vars[i-1]);
-
-        left_total_proof << "(not smt_sat_rel" << i << ")\n";
-        left_total_proof << ")\n)\n";
-        left_total_proof << "(check-sat)\n";
-        left_total_proof << "(set-option :regular-output-channel \"left_total_r" << i << "_proof.out\")\n";
-        left_total_proof << "(get-proof)\n";
-        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        left_total_proof << "(pop)\n\n";
-    }
-
-
-
-    for(int i = 1; i < sat_subspace_num; i++){
-        left_total_proof << "(push)\n";
-        left_total_proof << "(echo \"Check left-total " << i << "\")\n";
-        left_total_proof << "(assert (and\n";
-
-        for(int j : collect_mapped_related_ids(interned_vars.sat_subspace[i-1], smt_subspace_index, interned_vars.sat_to_smt, smt_subspace_num))
-            left_total_proof << "smt_subspace" << j << "\n";
-
-        for(int j : collect_mapped_related_ids(interned_vars.sat_subspace[i-1], smt_dom_index, interned_vars.sat_to_smt, smt_dom_num))
-            left_total_proof << "smt_dom" << j << "\n";
-
-        write_cached_lines_for_vars(left_total_proof, left_total_cache, sat_subspace_vars[i-1]);
-
-        left_total_proof << "(not sat_subspace" << i << ")\n";
-        left_total_proof << ")\n)\n";
-        left_total_proof << "(check-sat)\n";
-        left_total_proof << "(set-option :regular-output-channel \"left_total_" << i << "_proof.out\")\n";
-        left_total_proof << "(get-proof)\n";
-        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        left_total_proof << "(pop)\n\n";
-
-    }
-
-    left_total_proof.close();
-
-    system("rm -f right_total_proof.smt2");
-    ofstream right_total_proof = ofstream("right_total_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> right_total_proof.smt2");
     right_total.flush();
     auto right_total_cache = build_var_line_cache("right_total.smt2");
 
-    for(int i = 1; i < smt_sat_rel_num; i++){
-        right_total_proof << "(push)\n";
-        right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
-        right_total_proof << "(assert (and\n";
+    unordered_set<string> visible_sat_vars;
+    for(const auto& [lit_num, role] : sat_var_roles)
+        if(role == SatVarRole::VISIBLE)
+            visible_sat_vars.insert("x" + to_string(lit_num));
 
-        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], sat_subspace_index, mapped_sat_subspace_index, sat_subspace_num))
-            right_total_proof << "sat_subspace" << j << "\n";
+    unordered_set<string> visible_smt_vars;
+    for(const auto& [id, name] : smt_name_by_id)
+        visible_smt_vars.insert(name);
 
-        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_sat_rel_vars[i-1]);
-
-        right_total_proof << "(not smt_sat_rel" << i << ")\n";
-        right_total_proof << ")\n)\n";
-        right_total_proof << "(check-sat)\n";
-        right_total_proof << "(set-option :regular-output-channel \"right_total_r" << i << "_proof.out\")\n";
-        right_total_proof << "(get-proof)\n";
-        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        right_total_proof << "(pop)\n\n";
-    }
-
-
-
-    for(int i = 1; i < smt_subspace_num; i++){
-        right_total_proof << "(push)\n";
-        right_total_proof << "(echo \"Check right-total " << i << "\")\n";
-        right_total_proof << "(assert (and\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], mapped_sat_subspace_index, sat_subspace_num))
-            right_total_proof << "sat_subspace" << j << "\n";
-
-        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_subspace_vars[i-1]);
-
-        right_total_proof << "(not smt_subspace" << i << ")\n";
-        right_total_proof << ")\n)\n";
-        right_total_proof << "(check-sat)\n";
-        right_total_proof << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
-        right_total_proof << "(get-proof)\n";
-        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        right_total_proof << "(pop)\n\n";
-
-    }    
-
-    right_total_proof.close();
-
-    system("rm -f soundness_proof.smt2");
-    ofstream soundness_proof = ofstream("soundness_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> soundness_proof.smt2");
-
-    for(int smt_i = 1; smt_i < smt_dom_num && smt_i <= (int)smt_dom_vars.size(); smt_i++){
-        for(int sat_i : collect_related_ids(interned_vars.smt_dom[smt_i-1], mapped_sat_dom_index, sat_dom_num)){
-            soundness_proof << "(push)\n";
-            soundness_proof << "(echo \"Check soundness dom" << smt_i << "_" << sat_i << "\")\n";
-            soundness_proof << "(assert (and\n";
-
-            for(int j : collect_related_ids(interned_vars.smt_dom[smt_i-1], smt_subspace_index, smt_subspace_num))
-                soundness_proof << "smt_subspace" << j << "\n";
-
-            for(int j : collect_related_ids(interned_vars.sat_dom[sat_i-1], sat_subspace_index, sat_subspace_num))
-                soundness_proof << "sat_subspace" << j << "\n";
-
-            for(int j : collect_related_ids(interned_vars.sat_dom[sat_i-1], interned_vars.smt_dom[smt_i-1], smt_sat_rel_index, smt_sat_rel_num))
-                soundness_proof << "smt_sat_rel" << j << "\n";
-
-            soundness_proof << "(distinct smt_dom" << smt_i << " sat_dom" << sat_i << ")\n";
-            soundness_proof << ")\n";
-            soundness_proof << ")\n";
-            soundness_proof << "(check-sat)\n";
-            soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << smt_i << "_" << sat_i <<".out\")\n";
-            soundness_proof << "(get-proof)\n";
-            soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
-            soundness_proof << "(pop)\n\n";
-
-        }
-    }
-
-    for(int i = 1; i < next_constraint_num; i++){
-        soundness_proof << "(push)\n";
-        soundness_proof << "(echo \"Check soundness c" << i << "\")\n";
-        soundness_proof << "(assert (and\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_constraints[i-1], smt_subspace_index, smt_subspace_num))
-            soundness_proof << "smt_subspace" << j << "\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_constraints[i-1], smt_dom_index, smt_dom_num))
-            soundness_proof << "smt_dom" << j << "\n";
-        
-        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], sat_subspace_index, sat_subspace_num))
-            soundness_proof << "sat_subspace" << j << "\n";
-        
-        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
-            soundness_proof << "smt_sat_rel" << j << "\n";
-        
-        soundness_proof << "(distinct smt_c" << i << " sat_c" << i << ")\n";
-        soundness_proof << ")\n";
-        soundness_proof << ")\n";
-        soundness_proof << "(check-sat)\n";
-        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
-        soundness_proof << "(get-proof)\n";
-        soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        soundness_proof << "(pop)\n\n";
-
-    }
-
-    soundness_proof.close();
+    write_new_theory_proofs(
+        "proof.smt2",
+        sat_dom_num,
+        smt_dom_num,
+        smt_sat_rel_num,
+        next_constraint_num,
+        sat_dom_vars,
+        smt_dom_vars,
+        sat_constraints_vars,
+        smt_constraints_vars,
+        smt_sat_rel_vars,
+        interned_vars,
+        sat_dom_index,
+        smt_dom_index,
+        smt_sat_rel_index,
+        mapped_sat_dom_index,
+        visible_sat_vars,
+        visible_smt_vars,
+        left_total_cache,
+        right_total_cache,
+        auxiliary_witness_cache,
+        auxiliary_witness_smt_deps,
+        smt_constraint_deps
+    );
     proof_file.close();
 
     write_proof_bodies(
         "proof.smt2",
         {
-            {"smt_containing_proof.smt2", "smt_containing_body.smt2"},
-            {"sat_containing_proof.smt2", "sat_containing_body.smt2"},
             {"left_total_proof.smt2", "left_total_body.smt2"},
             {"right_total_proof.smt2", "right_total_body.smt2"},
-            {"soundness_proof.smt2", "soundness_body.smt2"}
+            {"soundness_right_proof.smt2", "soundness_right_body.smt2"},
+            {"soundness_left_proof.smt2", "soundness_left_body.smt2"}
         },
         "prelude.smt2"
     );
 
 
-    system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2 *subspace.smt2");
-    system("rm -f left_containing.smt2 right_containing.smt2 left_total.smt2 right_total.smt2 sat_constraints.smt2");
+    system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2");
+    system("rm -f left_total.smt2 right_total.smt2 sat_constraints.smt2");
     system("rm -f sat_smt_funs.smt2 smt_sat_funs.smt2");
+    system("rm -f auxiliary_witness_defs.smt2 auxiliary_witness_eqs.smt2");
     system("rm -f connection2step.smt2 constraints2step1.smt2 constraints2step2.smt2 domains2step.smt2");
-    system("rm -f left_total_step1.smt2 smt_step1_funs.smt2 smt_subspace_step1.smt2");
+    system("rm -f step1_auxiliary_witnesses.smt2 smt_step1_funs.smt2");
 
     system("rm proof.smt2");
     system("mkdir -p proofs");
-    system("mv *.smt2 proofs");
+    system("mv prelude.smt2 left_total_body.smt2 right_total_body.smt2 soundness_right_body.smt2 soundness_left_body.smt2 proofs");
 }
 
 void Encoder::generate_proof2step(){
@@ -2090,6 +2036,7 @@ void Encoder::generate_proof2step(){
 
     write_sat_dom_clauses(sat_dom_clauses2step);
 
+    proof_file.flush();
     system("cat trivial_encoding_vars.smt2 >> proof_step1.smt2");
 
     proof_file << "\n(define-fun smt_dom_step1 () Bool\n";
@@ -2111,7 +2058,9 @@ void Encoder::generate_proof2step(){
     else
         proof_file << "true\n)\n" << endl;
 
+    proof_file.flush();
     system("cat trivial_encoding_constraints.smt2 >> proof_step1.smt2");
+    proof_file.flush();
     system("cat constraints2step1.smt2 >> proof_step1.smt2");
     
 
@@ -2126,27 +2075,49 @@ void Encoder::generate_proof2step(){
     }
     proof_file << ")\n)\n";
 
-    proof_file << "(define-fun smt_dom () Bool\n(and\n";
-    ifstream smt_dom_step2_reader = ifstream("trivial_encoding_domains.smt2");  
+    proof_file << "(define-fun smt_dom () Bool\n";
+    ifstream smt_dom_step2_reader = ifstream("trivial_encoding_domains.smt2");
+    bool has_smt_dom_step2_clause = false;
     while(getline(smt_dom_step2_reader, line)){
 
-        if(line != "---")
+        if(line != "---"){
+            if(!has_smt_dom_step2_clause){
+                proof_file << "(and\n";
+                has_smt_dom_step2_clause = true;
+            }
             proof_file << line << endl;
+        }
     }
+    if(has_smt_dom_step2_clause)
+        proof_file << ")\n)\n" << endl;
+    else
+        proof_file << "true\n)\n" << endl;
 
+    proof_file << "(define-fun smt_aux_dom () Bool\n";
     smt_dom_step2_reader = ifstream("domains2step.smt2");  
+    bool has_main_smt_aux_dom_clause = false;
     while(getline(smt_dom_step2_reader, line)){
 
-        if(line != "---")
+        if(line != "---"){
+            if(!has_main_smt_aux_dom_clause){
+                proof_file << "(and\n";
+                has_main_smt_aux_dom_clause = true;
+            }
             proof_file << line << endl;
+        }
     }
-    proof_file << ")\n)" << endl;
+    if(has_main_smt_aux_dom_clause)
+        proof_file << ")\n)\n" << endl;
+    else
+        proof_file << "true\n)\n" << endl;
 
+    proof_file.flush();
     system("cat constraints2step2.smt2 >> proof_step1.smt2");
 
     proof_file << "(define-fun smt_encode () Bool\n";
     proof_file << "(and\n";
     proof_file << "smt_dom\n";
+    proof_file << "smt_aux_dom\n";
     for(int i = 1; i < next_constraint_num; i++){
         proof_file << "smt_c" << i << endl;
     }
@@ -2155,307 +2126,115 @@ void Encoder::generate_proof2step(){
     proof_file << "(define-fun smt_step1_rel() Bool\n";
     proof_file << "true\n)\n";
     
-    bool should_define_fun = false;
-
-    ifstream smt_subspace_reader = ifstream("smt_subspace_step1.smt2");
-    if(std::filesystem::file_size("smt_subspace_step1.smt2") > 0)
-        proof_file << "(define-fun smt_subspace_step1_" << smt_subspace_step1_num++ <<" () Bool\n(and\n"; 
-
-    
-    while(getline(smt_subspace_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun smt_subspace_step1_" << smt_subspace_step1_num++ <<" () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        if(line == "---"){
-            proof_file << ")\n)\n";
-            should_define_fun = true;    
-        } else {
-            if(line[0] == '!')
-                proof_file << line.substr(1, line.size());
-            else
-                proof_file << line << endl;
-        }
-    }
-
-    proof_file << "(define-fun smt_subspace_step1 () Bool\n";
-    if(smt_subspace_step1_num == 1){
-        proof_file << "true\n)\n";
-    } else {
-        if(smt_subspace_step1_num > 2)
-            proof_file << "(and\n";
-        for(int i = 1; i < smt_subspace_step1_num; i++)
-            proof_file << "smt_subspace_step1_" << i << "\n";
-        if(smt_subspace_step1_num > 2)
-            proof_file << ")\n";
-        proof_file << ")\n";
-    }
-
-    smt_subspace_reader = ifstream("smt_subspace_step1.smt2");
-    if(std::filesystem::file_size("smt_subspace_step1.smt2") > 0)
-        proof_file << "(define-fun smt_subspace" << smt_subspace_step2_num++ << " () Bool\n(and\n"; 
-
-    should_define_fun = false;
-    while(getline(smt_subspace_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun smt_subspace" << smt_subspace_step2_num++ << " () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        if(line == "---"){
-            proof_file << ")\n)\n";
-            should_define_fun = true;    
-        } else if(line[0] == '!'){
-            getline(smt_subspace_reader, line);
-        } else 
-            proof_file << line << endl;
-    }
-
-    ifstream connection2step_reader = ifstream("connection2step.smt2");
-    if((std::filesystem::file_size("connection2step.smt2") > 0 && should_define_fun) || std::filesystem::file_size("smt_subspace_step1.smt2") == 0)
-        proof_file << "(define-fun smt_subspace" << smt_subspace_step2_num++ << " () Bool\n(and\n"; 
-
-    should_define_fun = false;    
-    while(getline(connection2step_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun smt_subspace" << smt_subspace_step2_num++ << " () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        if(line == "---"){
-            proof_file << ")\n)" << endl;
-            should_define_fun = true;    
-        } else
-            proof_file << line << endl;
-    }
-
-    proof_file << "(define-fun smt_subspace () Bool\n";
-    if(smt_subspace_step2_num > 2)
-        proof_file << "(and\n";
-    for(int i = 1; i < smt_subspace_step2_num; i++)
-        proof_file << "smt_subspace" << i << "\n";
-    if(smt_subspace_step2_num > 2)
-        proof_file << ")\n";
-    proof_file << ")" << endl;
-    
+    proof_file.flush();
     system("cat smt_step1_funs.smt2 >> proof_step1.smt2");
-
     proof_file.flush();
 
-    unordered_map<string, int> step1_var_ids;
-    IntChunks step1_smt_subspace_vars = intern_chunks(smt_subspace_step1_vars, step1_var_ids);
-    IntChunks step1_connection_vars = intern_chunks(connection2step_vars, step1_var_ids);
-    IntChunks step1_smt_constraints_vars = intern_chunks(smt_constraints_vars, step1_var_ids);
-    auto step1_smt_subspace_index = build_var_chunk_index(step1_smt_subspace_vars);
-    auto step1_connection_index = build_var_chunk_index(step1_connection_vars);
-    auto step1_smt_constraints_index = build_var_chunk_index(step1_smt_constraints_vars);
+    proof_file << "(define-fun smt_step1_witnesses () Bool\n";
+    ifstream witnesses("step1_auxiliary_witnesses.smt2");
+    bool has_step1_auxiliary_witnesses = false;
+    string witness_line;
+    while(getline(witnesses, witness_line)){
+        if(!has_step1_auxiliary_witnesses){
+            proof_file << "(and\n";
+            has_step1_auxiliary_witnesses = true;
+        }
+        proof_file << witness_line << "\n";
+    }
+    if(has_step1_auxiliary_witnesses)
+        proof_file << ")\n)\n";
+    else
+        proof_file << "true\n)\n";
+    proof_file.flush();
 
     system("mkdir -p proofs_step1");
 
-    system("rm -f smt_containing_step1_proof_step1.smt2");
-    ofstream smt_containing_step1_proof_step1 = ofstream("smt_containing_step1_proof_step1.smt2", ios::app);
+    system("rm -f soundness_left_proof_step1.smt2");
+    ofstream soundness_left_proof_step1 = ofstream("soundness_left_proof_step1.smt2", ios::app);
 
-    system("cat proof_step1.smt2 >> smt_containing_step1_proof_step1.smt2");
+    system("cat proof_step1.smt2 >> soundness_left_proof_step1.smt2");
 
-    for(int i = 1; i < smt_subspace_step1_num; i++){
-        smt_containing_step1_proof_step1 << "(push)\n";
-        smt_containing_step1_proof_step1 << "(echo \"Check SMT step 1 containing " << i << "\")\n";
-        smt_containing_step1_proof_step1 << "(assert (and\n smt_dom_step1\n";
-
-        for(int j : collect_related_ids(step1_smt_subspace_vars[i-1], step1_smt_constraints_index, next_constraint_num)){
-            if(constraint2step_set.find(j) != constraint2step_set.end())
-                smt_containing_step1_proof_step1 << "smt_c" << j << "_step1 \n";
-            else
-                smt_containing_step1_proof_step1 << "smt_c" << j << "\n";
-        }
-
-        smt_containing_step1_proof_step1 << "(not smt_subspace_step1_" << i << ")))\n";
-        smt_containing_step1_proof_step1 << "(check-sat)\n";
-        smt_containing_step1_proof_step1 << "(set-option :regular-output-channel \"smt_containing_step1_proof" << i <<".out\")\n";
-        smt_containing_step1_proof_step1 << "(get-proof)\n";
-        smt_containing_step1_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
-        smt_containing_step1_proof_step1 << "(pop)\n\n";
-
-    }
-
-    smt_containing_step1_proof_step1.close();
-
-    system("rm -f smt_containing_step2_proof_step1.smt2");
-    ofstream smt_containing_step2_proof_step1 = ofstream("smt_containing_step2_proof_step1.smt2", ios::app);
-
-    system("cat proof_step1.smt2 >> smt_containing_step2_proof_step1.smt2");
-
-
-    for(int i = 1; i < smt_subspace_step2_num; i++){
-        smt_containing_step2_proof_step1 << "(push)\n";
-        smt_containing_step2_proof_step1 << "(echo \"Check SMT step 2 containing " << i << "\")\n";
-        smt_containing_step2_proof_step1 << "(assert (and\nsmt_dom\n";
-
-        const IntSet& query_vars = (i < smt_subspace_step1_num)
-            ? step1_smt_subspace_vars[i-1]
-            : step1_connection_vars[i - smt_subspace_step1_num];
-        for(int j : collect_related_ids(query_vars, step1_smt_constraints_index, next_constraint_num))
-            smt_containing_step2_proof_step1 << "smt_c" << j << "\n";
-
-        smt_containing_step2_proof_step1 << "(not smt_subspace" << i << ")))\n";
-        smt_containing_step2_proof_step1 << "(check-sat)\n";
-        smt_containing_step2_proof_step1 << "(set-option :regular-output-channel \"smt_containing_step2_proof" << i <<".out\")\n";
-        smt_containing_step2_proof_step1 << "(get-proof)\n";
-        smt_containing_step2_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
-        smt_containing_step2_proof_step1 << "(pop)\n\n";
-
-    }
-    smt_containing_step2_proof_step1.close();
-
-    system("rm -f left_total_proof_step1.smt2");
-    ofstream left_total_proof_step1 = ofstream("left_total_proof_step1.smt2", ios::app);
-
-    system("cat proof_step1.smt2 >> left_total_proof_step1.smt2");
-
-    left_total_proof_step1 << "(push)\n";
-    left_total_proof_step1 << "(echo \"Check left-total step 1 R\")\n";
-    left_total_proof_step1 << "(assert (and\n";
-    left_total_proof_step1 << "smt_subspace_step1" << endl;
-    system("cat left_total_step1.smt2 >> left_total_proof_step1.smt2");
-    left_total_proof_step1 << "(not smt_step1_rel )\n";
-    left_total_proof_step1 << ")\n)\n";
-    left_total_proof_step1 << "(check-sat)\n";
-    left_total_proof_step1 << "(set-option :regular-output-channel \"left_total_step1_r_proof.out\")\n";
-    left_total_proof_step1 << "(get-proof)\n";
-    left_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
-    left_total_proof_step1 << "(pop)\n\n";
-    
-    auto left_total_step1_cache = build_var_line_cache("left_total_step1.smt2");
-
-    for(int i = 1; i < smt_subspace_step2_num; i++){
-        left_total_proof_step1 << "(push)\n";
-        left_total_proof_step1 << "(echo \"Check left-total step 1 " << i << "\")\n";
-        left_total_proof_step1 << "(assert (and\n";
-
-
-        const IntSet& query_vars = (i < smt_subspace_step1_num)
-            ? step1_smt_subspace_vars[i-1]
-            : step1_connection_vars[i-smt_subspace_step1_num];
-        for(int j : collect_related_ids(query_vars, step1_smt_subspace_index, smt_subspace_step1_num))
-            left_total_proof_step1 << "smt_subspace_step1_" << j << "\n";
-
-        if(i < smt_subspace_step1_num)
-            write_cached_lines_for_vars(left_total_proof_step1, left_total_step1_cache, smt_subspace_step1_vars[i-1]);
-        if(i >= smt_subspace_step1_num)
-            write_cached_lines_for_vars(left_total_proof_step1, left_total_step1_cache, connection2step_vars[i-smt_subspace_step1_num]);
-
-        left_total_proof_step1 << "(not smt_subspace" << i << ")\n";
-        left_total_proof_step1 << ")\n)\n";
-        left_total_proof_step1 << "(check-sat)\n";
-        left_total_proof_step1 << "(set-option :regular-output-channel \"left_total_step1_" << i << "_proof.out\")\n";
-        left_total_proof_step1 << "(get-proof)\n";
-        left_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
-        left_total_proof_step1 << "(pop)\n\n";
-
-    }
-
-    left_total_proof_step1.close();
-
-    system("rm -f right_total_proof_step1.smt2");
-    ofstream right_total_proof_step1 = ofstream("right_total_proof_step1.smt2", ios::app);
-
-    system("cat proof_step1.smt2 >> right_total_proof_step1.smt2");
-
-    right_total_proof_step1 << "(push)\n";
-    right_total_proof_step1 << "(echo \"Check right-total step 1 R\")\n";
-    right_total_proof_step1 << "(assert (and\n";
-    right_total_proof_step1 << "smt_subspace" << endl;
-    right_total_proof_step1 << "(not smt_step1_rel )\n";
-    right_total_proof_step1 << ")\n)\n";
-    right_total_proof_step1 << "(check-sat)\n";
-    right_total_proof_step1 << "(set-option :regular-output-channel \"right_total_step1_r_proof.out\")\n";
-    right_total_proof_step1 << "(get-proof)\n";
-    right_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
-    right_total_proof_step1 << "(pop)\n\n";
-
-    for(int i = 1; i < smt_subspace_step1_num; i++){
-        right_total_proof_step1 << "(push)\n";
-        right_total_proof_step1 << "(echo \"Check right-total " << i << "\")\n";
-        right_total_proof_step1 << "(assert (and\n";
-
-        for(int j : collect_related_ids(step1_smt_subspace_vars[i-1], step1_smt_subspace_index, smt_subspace_step1_num))
-            right_total_proof_step1 << "smt_subspace" << j << "\n";
-        for(int j : collect_related_ids(step1_smt_subspace_vars[i-1], step1_connection_index, (int)step1_connection_vars.size() + 1))
-            right_total_proof_step1 << "smt_subspace" << j + smt_subspace_step1_num - 1 << "\n";
-
-        right_total_proof_step1 << "(not smt_subspace_step1_" << i << ")\n";
-        right_total_proof_step1 << ")\n)\n";
-        right_total_proof_step1 << "(check-sat)\n";
-        right_total_proof_step1 << "(set-option :regular-output-channel \"right_total_step1_" << i << "_proof.out\")\n";
-        right_total_proof_step1 << "(get-proof)\n";
-        right_total_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
-        right_total_proof_step1 << "(pop)\n\n";
-
-    }
-
-    right_total_proof_step1.close();
-
-    system("rm -f soundness_proof_step1.smt2");
-    ofstream soundness_proof_step1 = ofstream("soundness_proof_step1.smt2", ios::app);
-
-    system("cat proof_step1.smt2 >> soundness_proof_step1.smt2");    
-
-    soundness_proof_step1 << "(push)\n";
-    soundness_proof_step1 << "(echo \"Check soundness dom step 1\")\n";
-    soundness_proof_step1 << "(assert (and\n";
-    soundness_proof_step1 << "smt_subspace_step1\n";
-    soundness_proof_step1 << "smt_subspace\n";
-    soundness_proof_step1 << "smt_step1_rel\n";
-    soundness_proof_step1 << "(distinct smt_dom_step1 smt_dom)\n";
-    soundness_proof_step1 << ")\n";
-    soundness_proof_step1 << ")\n";
-    soundness_proof_step1 << "(check-sat)\n";
-    soundness_proof_step1 << "(set-option :regular-output-channel \"soundness_proof_dom.out\")\n";
-    soundness_proof_step1 << "(get-proof)\n";
-    soundness_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
-    soundness_proof_step1 << "(pop)\n\n";
+    soundness_left_proof_step1 << "(push)\n";
+    soundness_left_proof_step1 << "(echo \"Check soundness-left aux-dom step 1\")\n";
+    soundness_left_proof_step1 << "(assert (and\n";
+    soundness_left_proof_step1 << "smt_dom\n";
+    soundness_left_proof_step1 << "smt_step1_witnesses\n";
+    soundness_left_proof_step1 << "(not smt_aux_dom)\n";
+    soundness_left_proof_step1 << ")\n)\n";
+    soundness_left_proof_step1 << "(check-sat)\n";
+    soundness_left_proof_step1 << "(set-option :regular-output-channel \"soundness_left_step1_aux_dom_proof.out\")\n";
+    soundness_left_proof_step1 << "(get-proof)\n";
+    soundness_left_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+    soundness_left_proof_step1 << "(pop)\n\n";
 
     for(int i = 1; i < next_constraint_num; i++){
-        if(constraint2step_set.find(i) != constraint2step_set.end()){
-            soundness_proof_step1 << "(push)\n";
-            soundness_proof_step1 << "(echo \"Check soundness c" << i << " step 1\")\n";
-            soundness_proof_step1 << "(assert (and\n";
+        if(constraint2step_set.find(i) == constraint2step_set.end())
+            continue;
 
+        soundness_left_proof_step1 << "(push)\n";
+        soundness_left_proof_step1 << "(echo \"Check soundness-left c" << i << " step 1\")\n";
+        soundness_left_proof_step1 << "(assert (and\n";
+        soundness_left_proof_step1 << "smt_dom\n";
 
-            for(int j : collect_related_ids(step1_smt_constraints_vars[i-1], step1_smt_subspace_index, smt_subspace_step1_num))
-                soundness_proof_step1 << "smt_subspace_step1_" << j << "\n";
-            
-            for(int j : collect_related_ids(step1_smt_constraints_vars[i-1], step1_connection_index, (int)step1_connection_vars.size() + 1))
-                soundness_proof_step1 << "smt_subspace" << j + smt_subspace_step1_num -1 << "\n";
-            
-            soundness_proof_step1 << "smt_step1_rel\n";
-            soundness_proof_step1 << "(distinct smt_c" << i << "_step1 smt_c" << i << ")\n";
-            soundness_proof_step1 << ")\n";
-            soundness_proof_step1 << ")\n";
-            soundness_proof_step1 << "(check-sat)\n";
-            soundness_proof_step1 << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
-            soundness_proof_step1 << "(get-proof)\n";
-            soundness_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
-            soundness_proof_step1 << "(pop)\n\n";
-        }
+        if(constraint2step_set.find(i) != constraint2step_set.end())
+            soundness_left_proof_step1 << "smt_c" << i << "_step1\n";
+        else
+            soundness_left_proof_step1 << "smt_c" << i << "\n";
 
+        soundness_left_proof_step1 << "smt_step1_witnesses\n";
+
+        soundness_left_proof_step1 << "(not smt_c" << i << ")\n";
+        soundness_left_proof_step1 << ")\n)\n";
+        soundness_left_proof_step1 << "(check-sat)\n";
+        soundness_left_proof_step1 << "(set-option :regular-output-channel \"soundness_left_step1_c" << i << "_proof.out\")\n";
+        soundness_left_proof_step1 << "(get-proof)\n";
+        soundness_left_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+        soundness_left_proof_step1 << "(pop)\n\n";
     }
 
-    soundness_proof_step1.close();
+    soundness_left_proof_step1.close();
+
+    system("rm -f soundness_right_proof_step1.smt2");
+    ofstream soundness_right_proof_step1 = ofstream("soundness_right_proof_step1.smt2", ios::app);
+
+    system("cat proof_step1.smt2 >> soundness_right_proof_step1.smt2");
+
+    for(int i = 1; i < next_constraint_num; i++){
+        if(constraint2step_set.find(i) == constraint2step_set.end())
+            continue;
+
+        soundness_right_proof_step1 << "(push)\n";
+        soundness_right_proof_step1 << "(echo \"Check soundness-right c" << i << " step 1\")\n";
+        soundness_right_proof_step1 << "(assert (and\n";
+        soundness_right_proof_step1 << "smt_dom_step1\n";
+        soundness_right_proof_step1 << "smt_aux_dom\n";
+
+        auto dependency_it = step1_constraint_dependencies.find(i);
+        if(dependency_it != step1_constraint_dependencies.end()){
+            vector<int> dependencies(dependency_it->second.begin(), dependency_it->second.end());
+            sort(dependencies.begin(), dependencies.end());
+            for(int dependency : dependencies)
+                soundness_right_proof_step1 << "smt_c" << dependency << "\n";
+        }
+
+        soundness_right_proof_step1 << "smt_c" << i << "\n";
+        soundness_right_proof_step1 << "(not smt_c" << i << "_step1)\n";
+        soundness_right_proof_step1 << ")\n)\n";
+        soundness_right_proof_step1 << "(check-sat)\n";
+        soundness_right_proof_step1 << "(set-option :regular-output-channel \"soundness_right_step1_c" << i << "_proof.out\")\n";
+        soundness_right_proof_step1 << "(get-proof)\n";
+        soundness_right_proof_step1 << "(set-option :regular-output-channel \"stdout\")\n";
+        soundness_right_proof_step1 << "(pop)\n\n";
+    }
+
+    soundness_right_proof_step1.close();
 
     proof_file.close();
     write_proof_bodies(
         "proof_step1.smt2",
         {
-            {"smt_containing_step1_proof_step1.smt2", "smt_containing_step1_body_step1.smt2"},
-            {"smt_containing_step2_proof_step1.smt2", "smt_containing_step2_body_step1.smt2"},
-            {"left_total_proof_step1.smt2", "left_total_body_step1.smt2"},
-            {"right_total_proof_step1.smt2", "right_total_body_step1.smt2"},
-            {"soundness_proof_step1.smt2", "soundness_body_step1.smt2"}
+            {"soundness_left_proof_step1.smt2", "soundness_left_body_step1.smt2"},
+            {"soundness_right_proof_step1.smt2", "soundness_right_body_step1.smt2"}
         },
         "prelude_step1.smt2"
     );
@@ -2476,6 +2255,7 @@ void Encoder::generate_proof2step(){
         proof_file << "LIA";
     proof_file << ")\n" << endl;
 
+    proof_file.flush();
     system("cat trivial_encoding_vars.smt2 >> proof.smt2");
 
     int num_vars = 0;
@@ -2493,7 +2273,7 @@ void Encoder::generate_proof2step(){
     if(std::filesystem::file_size("trivial_encoding_domains.smt2") > 0)
         proof_file << "(define-fun smt_dom" << smt_dom_num++ << " () Bool\n(and\n"; 
     
-    should_define_fun = false;
+    bool should_define_fun = false;
     while(getline(smt_dom_reader, line)){
 
         if(should_define_fun){
@@ -2543,7 +2323,9 @@ void Encoder::generate_proof2step(){
         proof_file << ")" << endl;
     }
 
+    proof_file.flush();
     system("cat trivial_encoding_constraints.smt2 >> proof.smt2");
+    proof_file.flush();
     system("cat constraints2step2.smt2 >> proof.smt2");
 
 
@@ -2651,71 +2433,23 @@ void Encoder::generate_proof2step(){
     proof_file << ")\n";
 
 
-    smt_subspace_reader = ifstream("smt_subspace.smt2");
-    if(std::filesystem::file_size("smt_subspace.smt2") > 0)
-        proof_file << "(define-fun smt_subspace" << smt_subspace_num++ << " () Bool\n(and\n"; 
-
-    should_define_fun = false;
-    while(getline(smt_subspace_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun smt_subspace" << smt_subspace_num++ << " () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        if(line == "---"){
-            proof_file << ")\n)\n";
-            should_define_fun = true;    
-        } else
-            proof_file << line << endl;
-    }
-
-    proof_file << "(define-fun smt_subspace () Bool\n";
-    if(smt_subspace_num > 2)
-        proof_file << "(and\n";
-    for(int i = 1; i < smt_subspace_num; i++)
-        proof_file << "smt_subspace" << i << "\n";
-    if(smt_subspace_num > 2)
-        proof_file << ")\n";
-    proof_file << ")\n";
-
-    ifstream sat_subspace_reader = ifstream("sat_subspace.smt2");
-    if(std::filesystem::file_size("sat_subspace.smt2") > 0)
-        proof_file << "(define-fun sat_subspace" << sat_subspace_num++ << " () Bool\n(and\n"; 
-
-    should_define_fun = false;
-    while(getline(sat_subspace_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun sat_subspace" << sat_subspace_num++ << " () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        if(line == "---"){
-            proof_file << ")\n)\n";
-            should_define_fun = true;    
-        } else
-            proof_file << line << endl;
-    }
-
-    proof_file << "(define-fun sat_subspace () Bool\n";
-    if(sat_subspace_num > 2)
-        proof_file << "(and\n";
-    for(int i = 1; i < sat_subspace_num; i++)
-        proof_file << "sat_subspace" << i << "\n";
-    if(sat_subspace_num > 2)
-        proof_file << ")\n";
-    proof_file << ")" << endl;
-
+    proof_file.flush();
     system("cat sat_smt_funs.smt2 >> proof.smt2");
 
+    proof_file.flush();
     system("cat smt_sat_funs.smt2 >> proof.smt2");
+
+    write_auxiliary_witnesses();
+    proof_file.flush();
+    system("cat auxiliary_witness_defs.smt2 >> proof.smt2");
+    auto auxiliary_witness_cache = build_var_line_cache("auxiliary_witness_eqs.smt2");
+    auto auxiliary_witness_smt_deps = build_define_fun_dependency_cache("auxiliary_witness_defs.smt2", "h_", false);
+    proof_file.flush();
+    auto smt_constraint_deps = build_define_fun_dependency_cache("proof.smt2", "smt_c", false);
 
     auto interned_vars = build_interned_proof_vars(
         smt_dom_vars,
         sat_dom_vars,
-        smt_subspace_vars,
-        sat_subspace_vars,
         smt_constraints_vars,
         sat_constraints_vars,
         smt_sat_rel_vars,
@@ -2723,262 +2457,74 @@ void Encoder::generate_proof2step(){
     );
     auto smt_dom_index = build_var_chunk_index(interned_vars.smt_dom);
     auto sat_dom_index = build_var_chunk_index(interned_vars.sat_dom);
-    auto smt_subspace_index = build_var_chunk_index(interned_vars.smt_subspace);
-    auto sat_subspace_index = build_var_chunk_index(interned_vars.sat_subspace);
-    auto smt_constraints_index = build_var_chunk_index(interned_vars.smt_constraints);
-    auto sat_constraints_index = build_var_chunk_index(interned_vars.sat_constraints);
     auto smt_sat_rel_index = build_var_chunk_index(interned_vars.smt_sat_rel);
-    auto mapped_sat_subspace_index = build_mapped_sat_chunk_index(interned_vars.sat_subspace, interned_vars.sat_to_smt);
     auto mapped_sat_dom_index = build_mapped_sat_chunk_index(interned_vars.sat_dom, interned_vars.sat_to_smt);
 
     proof_file.flush();
 
-    system("mkdir -p proofs");
-
-    system("rm -f smt_containing_proof.smt2");
-    ofstream smt_containing_proof = ofstream("smt_containing_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> smt_containing_proof.smt2");    
-
-
-    for(int i = 1; i < smt_subspace_num; i++){
-        smt_containing_proof << "(push)\n";
-        smt_containing_proof << "(echo \"Check SMT containing " << i << "\")\n";
-        smt_containing_proof << "(assert (and\n";
-        
-        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], smt_dom_index, smt_dom_num))
-            smt_containing_proof << "smt_dom" << j << "\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], smt_constraints_index, next_constraint_num)){
-            smt_containing_proof << "smt_c" << j  << "\n";
-            for(int k : collect_related_ids(interned_vars.smt_constraints[j-1], smt_dom_index, smt_dom_num))
-                smt_containing_proof << "smt_dom" << k << "\n";
-        }
-        smt_containing_proof << "(not smt_subspace" << i << ")))\n";
-        smt_containing_proof << "(check-sat)\n";
-        smt_containing_proof << "(set-option :regular-output-channel \"smt_containing_proof" << i <<".out\")\n";
-        smt_containing_proof << "(get-proof)\n";
-        smt_containing_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        smt_containing_proof << "(pop)\n\n";
-
-    }
-
-
-    smt_containing_proof.close();
-
-    system("rm -f sat_containing_proof.smt2");
-    ofstream sat_containing_proof = ofstream("sat_containing_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> sat_containing_proof.smt2");    
-
-    for(int i = 1; i < sat_subspace_num; i++){
-        sat_containing_proof << "(push)\n";
-        sat_containing_proof << "(echo \"Check SAT containing " << i << "\")\n";
-        sat_containing_proof << "(assert (and\n";
-        for(int j : collect_related_ids(interned_vars.sat_subspace[i-1], sat_dom_index, sat_dom_num))
-            sat_containing_proof << "sat_dom" << j << "\n";
-        for(int j : collect_related_ids(interned_vars.sat_subspace[i-1], sat_constraints_index, next_constraint_num))
-            sat_containing_proof << "sat_c" << j << "\n";
-        sat_containing_proof << "(not sat_subspace" << i << ")))\n";
-        sat_containing_proof << "(check-sat)\n";
-        sat_containing_proof << "(set-option :regular-output-channel \"sat_containing_proof" << i <<".out\")\n";
-        sat_containing_proof << "(get-proof)\n";
-        sat_containing_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        sat_containing_proof << "(pop)\n\n";
-
-    }
-
-    sat_containing_proof.close();
-
-    system("rm -f left_total_proof.smt2");
-    ofstream left_total_proof = ofstream("left_total_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> left_total_proof.smt2");    
-
     auto left_total_cache = build_var_line_cache("left_total.smt2");
-
-    for(int i = 1; i < smt_sat_rel_num; i++){
-        left_total_proof << "(push)\n";
-        left_total_proof << "(echo \"Check left-total R" << i << "\")\n";
-        left_total_proof << "(assert (and\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], smt_subspace_index, smt_subspace_num))
-            left_total_proof << "smt_subspace" << j << "\n";
-
-        write_cached_lines_for_vars(left_total_proof, left_total_cache, smt_sat_rel_vars[i-1]);
-
-        left_total_proof << "(not smt_sat_rel" << i << ")\n";
-        left_total_proof << ")\n)\n";
-        left_total_proof << "(check-sat)\n";
-        left_total_proof << "(set-option :regular-output-channel \"left_total_r" << i << "_proof.out\")\n";
-        left_total_proof << "(get-proof)\n";
-        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        left_total_proof << "(pop)\n\n";
-    }
-
-
-
-    for(int i = 1; i < sat_subspace_num; i++){
-        left_total_proof << "(push)\n";
-        left_total_proof << "(echo \"Check left-total " << i << "\")\n";
-        left_total_proof << "(assert (and\n";
-
-        for(int j : collect_mapped_related_ids(interned_vars.sat_subspace[i-1], smt_subspace_index, interned_vars.sat_to_smt, smt_subspace_num))
-            left_total_proof << "smt_subspace" << j << "\n";
-
-        for(int j : collect_mapped_related_ids(interned_vars.sat_subspace[i-1], smt_dom_index, interned_vars.sat_to_smt, smt_dom_num))
-            left_total_proof << "smt_dom" << j << "\n";
-
-        write_cached_lines_for_vars(left_total_proof, left_total_cache, sat_subspace_vars[i-1]);
-
-        left_total_proof << "(not sat_subspace" << i << ")\n";
-        left_total_proof << ")\n)\n";
-        left_total_proof << "(check-sat)\n";
-        left_total_proof << "(set-option :regular-output-channel \"left_total_" << i << "_proof.out\")\n";
-        left_total_proof << "(get-proof)\n";
-        left_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        left_total_proof << "(pop)\n\n";
-
-    }
-
-    left_total_proof.close();
-
-    system("rm -f right_total_proof.smt2");
-    ofstream right_total_proof = ofstream("right_total_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> right_total_proof.smt2");    
 
     right_total.flush();
     auto right_total_cache = build_var_line_cache("right_total.smt2");
 
-    for(int i = 1; i < smt_sat_rel_num; i++){
-        right_total_proof << "(push)\n";
-        right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
-        right_total_proof << "(assert (and\n";
+    unordered_set<string> visible_sat_vars;
+    for(const auto& [lit_num, role] : sat_var_roles)
+        if(role == SatVarRole::VISIBLE)
+            visible_sat_vars.insert("x" + to_string(lit_num));
 
-        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], sat_subspace_index, mapped_sat_subspace_index, sat_subspace_num))
-            right_total_proof << "sat_subspace" << j << "\n";
+    unordered_set<string> visible_smt_vars;
+    for(const auto& [id, name] : smt_name_by_id)
+        visible_smt_vars.insert(name);
 
-        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_sat_rel_vars[i-1]);
-
-        right_total_proof << "(not smt_sat_rel" << i << ")\n";
-        right_total_proof << ")\n)\n";
-        right_total_proof << "(check-sat)\n";
-        right_total_proof << "(set-option :regular-output-channel \"right_total_r" << i << "_proof.out\")\n";
-        right_total_proof << "(get-proof)\n";
-        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        right_total_proof << "(pop)\n\n";
-    }
-
-
-
-    for(int i = 1; i < smt_subspace_num; i++){
-        right_total_proof << "(push)\n";
-        right_total_proof << "(echo \"Check right-total " << i << "\")\n";
-        right_total_proof << "(assert (and\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_subspace[i-1], mapped_sat_subspace_index, sat_subspace_num))
-            right_total_proof << "sat_subspace" << j << "\n";
-
-        write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_subspace_vars[i-1]);
-
-        right_total_proof << "(not smt_subspace" << i << ")\n";
-        right_total_proof << ")\n)\n";
-        right_total_proof << "(check-sat)\n";
-        right_total_proof << "(set-option :regular-output-channel \"right_total_" << i << "_proof.out\")\n";
-        right_total_proof << "(get-proof)\n";
-        right_total_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        right_total_proof << "(pop)\n\n";
-
-    }    
-    right_total_proof.close();
-
-    system("rm -f soundness_proof.smt2");
-    ofstream soundness_proof = ofstream("soundness_proof.smt2", ios::app);
-
-    system("cat proof.smt2 >> soundness_proof.smt2");     
-
-    for(int smt_i = 1; smt_i < smt_dom_num && smt_i <= (int)smt_dom_vars.size(); smt_i++){
-        for(int sat_i : collect_related_ids(interned_vars.smt_dom[smt_i-1], mapped_sat_dom_index, sat_dom_num)){
-            soundness_proof << "(push)\n";
-            soundness_proof << "(echo \"Check soundness dom" << smt_i << "_" << sat_i << "\")\n";
-            soundness_proof << "(assert (and\n";
-
-            for(int j : collect_related_ids(interned_vars.smt_dom[smt_i-1], smt_subspace_index, smt_subspace_num))
-                soundness_proof << "smt_subspace" << j << "\n";
-
-            for(int j : collect_related_ids(interned_vars.sat_dom[sat_i-1], sat_subspace_index, sat_subspace_num))
-                soundness_proof << "sat_subspace" << j << "\n";
-
-            for(int j : collect_related_ids(interned_vars.sat_dom[sat_i-1], interned_vars.smt_dom[smt_i-1], smt_sat_rel_index, smt_sat_rel_num))
-                soundness_proof << "smt_sat_rel" << j << "\n";
-
-            soundness_proof << "(distinct smt_dom" << smt_i << " sat_dom" << sat_i << ")\n";
-            soundness_proof << ")\n";
-            soundness_proof << ")\n";
-            soundness_proof << "(check-sat)\n";
-            soundness_proof << "(set-option :regular-output-channel \"soundness_proof_dom" << smt_i << "_" << sat_i <<".out\")\n";
-            soundness_proof << "(get-proof)\n";
-            soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
-            soundness_proof << "(pop)\n\n";
-
-        }
-    }
-
-    for(int i = 1; i < next_constraint_num; i++){
-        soundness_proof << "(push)\n";
-        soundness_proof << "(echo \"Check soundness c" << i << "\")\n";
-        soundness_proof << "(assert (and\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_constraints[i-1], smt_subspace_index, smt_subspace_num))
-            soundness_proof << "smt_subspace" << j << "\n";
-
-        for(int j : collect_related_ids(interned_vars.smt_constraints[i-1], smt_dom_index, smt_dom_num))
-            soundness_proof << "smt_dom" << j << "\n";
-        
-        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], sat_subspace_index, sat_subspace_num))
-            soundness_proof << "sat_subspace" << j << "\n";
-        
-        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
-            soundness_proof << "smt_sat_rel" << j << "\n";
-        
-        soundness_proof << "(distinct smt_c" << i << " sat_c" << i << ")\n";
-        soundness_proof << ")\n";
-        soundness_proof << ")\n";
-        soundness_proof << "(check-sat)\n";
-        soundness_proof << "(set-option :regular-output-channel \"soundness_proof_c" << i <<".out\")\n";
-        soundness_proof << "(get-proof)\n";
-        soundness_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        soundness_proof << "(pop)\n\n";
-
-    }
-
-    soundness_proof.close();
+    write_new_theory_proofs(
+        "proof.smt2",
+        sat_dom_num,
+        smt_dom_num,
+        smt_sat_rel_num,
+        next_constraint_num,
+        sat_dom_vars,
+        smt_dom_vars,
+        sat_constraints_vars,
+        smt_constraints_vars,
+        smt_sat_rel_vars,
+        interned_vars,
+        sat_dom_index,
+        smt_dom_index,
+        smt_sat_rel_index,
+        mapped_sat_dom_index,
+        visible_sat_vars,
+        visible_smt_vars,
+        left_total_cache,
+        right_total_cache,
+        auxiliary_witness_cache,
+        auxiliary_witness_smt_deps,
+        smt_constraint_deps
+    );
     proof_file.close();
 
     write_proof_bodies(
         "proof.smt2",
         {
-            {"smt_containing_proof.smt2", "smt_containing_body.smt2"},
-            {"sat_containing_proof.smt2", "sat_containing_body.smt2"},
             {"left_total_proof.smt2", "left_total_body.smt2"},
             {"right_total_proof.smt2", "right_total_body.smt2"},
-            {"soundness_proof.smt2", "soundness_body.smt2"}
+            {"soundness_right_proof.smt2", "soundness_right_body.smt2"},
+            {"soundness_left_proof.smt2", "soundness_left_body.smt2"}
         },
         "prelude.smt2"
     );
 
-    system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2 *subspace.smt2");
-    system("rm -f left_containing.smt2 right_containing.smt2 left_total.smt2 right_total.smt2 sat_constraints.smt2");
+    system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2");
+    system("rm -f left_total.smt2 right_total.smt2 sat_constraints.smt2");
     system("rm -f sat_smt_funs.smt2 smt_sat_funs.smt2");
+    system("rm -f auxiliary_witness_defs.smt2 auxiliary_witness_eqs.smt2");
     system("rm -f connection2step.smt2 constraints2step1.smt2 constraints2step2.smt2 domains2step.smt2 smt_step1_funs.smt2");
-    system("rm -f left_total_step1.smt2 smt_step1_funs.smt2 smt_subspace_step1.smt2");
+    system("rm -f step1_auxiliary_witnesses.smt2 smt_step1_funs.smt2");
 
     system("rm proof.smt2 proof_step1.smt2");
     system("mkdir -p proofs");
     system("mkdir -p proofs_step1");
-    system("mv *_step1.smt2 proofs_step1");
-    system("mv *.smt2 proofs");
+    system("mv prelude_step1.smt2 soundness_left_body_step1.smt2 soundness_right_body_step1.smt2 proofs_step1");
+    system("mv prelude.smt2 left_total_body.smt2 right_total_body.smt2 soundness_right_body.smt2 soundness_left_body.smt2 proofs");
 }
 
 // Runs the specified solver by executing a system call.
@@ -3205,6 +2751,7 @@ void Encoder::encode_variable(Variable& var, CNF& cnf_clauses) {
         BasicVar* basic_var = get<BasicVar*>(var);
         variable_map[*basic_var->name] = &var; 
         basic_var->id = new_var_id;
+        smt_name_by_id[new_var_id] = *basic_var->name;
 
         id_map[new_var_id] = variable_map[*basic_var->name];
         
@@ -3247,18 +2794,8 @@ void Encoder::encode_variable(Variable& var, CNF& cnf_clauses) {
                 trivial_encoding_domains << "(<= " << left_string << " " << *basic_var->name << " " << right_string
                                          << ")\n---\n";
 
-                smt_subspace << "(<= " << left_string << " " << *basic_var->name << " " << right_string
-                                         << ")\n---\n";
-
-                smt_subspace_vars.back().insert(*basic_var->name);
-                smt_subspace_vars.push_back({});
                 smt_dom_vars.back().insert(*basic_var->name);
                 smt_dom_vars.push_back({});
-
-                smt_subspace_step1 << "(<= " << left_string << " " << *basic_var->name << " " << right_string
-                            << ")\n---\n";
-                smt_subspace_step1_vars.back().insert(*basic_var->name);
-                smt_subspace_step1_vars.push_back({});
             }
 
         } else if(holds_alternative<IntSetVarType*>(*basic_var->type)){
@@ -3318,32 +2855,8 @@ void Encoder::encode_variable(Variable& var, CNF& cnf_clauses) {
                     trivial_encoding_domains << ")";
                 trivial_encoding_domains << "---" << endl;
 
-                if(n > 1)
-                    smt_subspace << "(or\n";
-                for(int i = 0; i < n; i++){
-                    string num_string = v[i] < 0 ? ("(- " + to_string(-v[i]) + ")") : to_string(v[i]);
-                    smt_subspace << "(= " << *basic_var->name << " " << num_string << ")\n";
-                }
-                if(n > 1)
-                    smt_subspace << ")\n";
-                smt_subspace << "---" << endl;
-
-                smt_subspace_vars.back().insert(*basic_var->name);
-                smt_subspace_vars.push_back({});
                 smt_dom_vars.back().insert(*basic_var->name);
                 smt_dom_vars.push_back({});
-
-                if(n > 1)
-                    smt_subspace_step1 << "(or\n";
-                for(int i = 0; i < n; i++){
-                    string num_string = v[i] < 0 ? ("(- " + to_string(-v[i]) + ")") : to_string(v[i]);
-                    smt_subspace_step1 << "(= " << *basic_var->name << " " << num_string << ")\n";
-                    smt_subspace_step1_vars.back().insert(*basic_var->name);
-                }
-                if(n > 1)
-                    smt_subspace_step1 << ")\n";
-                smt_subspace_step1 << "---" << endl;
-                smt_subspace_step1_vars.push_back({});
             }
 
         } else if(holds_alternative<SetVarType*>(*basic_var->type)){
@@ -3396,6 +2909,7 @@ BasicVar* Encoder::encode_int_range_helper_variable(const int left, const int ri
     string* name = new string("sub_" + to_string(sub_id));
     auto int_range_var = new BasicVar(new BasicVarType(var_type), name, true);
     int_range_var->id = sub_id;
+    smt_name_by_id[sub_id] = *name;
 
     // variable_map[*int_range_var->name] = new Variable(int_range_var);
     // id_map[sub_id] = variable_map[*int_range_var->name];
@@ -3446,32 +2960,16 @@ BasicVar* Encoder::encode_int_range_helper_variable(const int left, const int ri
         if(is2step_var){
             domains2step << "(<= " << left_string << " " << *int_range_var->name << " " << right_string
                                         << ")\n---\n";
-            smt_subspace << "(<= " << left_string << " " << *int_range_var->name << " " << right_string
-                                        << ")\n---\n";
 
-            smt_subspace_vars.back().insert(*int_range_var->name);
-            smt_subspace_vars.push_back({});
             smt_dom_vars2step.back().insert(*int_range_var->name);
             smt_dom_vars2step.push_back({});
         } else {
             trivial_encoding_domains << "(<= " << left_string << " " << *int_range_var->name << " " << right_string
                                         << ")\n";
             trivial_encoding_domains << "---" << endl;
-            smt_subspace << "(<= " << left_string << " " << *int_range_var->name << " " << right_string
-                                        << ")\n";
-            smt_subspace << "---" << endl;
 
-            smt_subspace_vars.back().insert(*int_range_var->name);
-            smt_subspace_vars.push_back({});
             smt_dom_vars.back().insert(*int_range_var->name);
             smt_dom_vars.push_back({});
-
-            smt_subspace_step1 << "(<= " << left_string << " " << *int_range_var->name << " " << right_string
-                                        << ")\n";
-            smt_subspace_step1 << "---" << endl;
-         
-            smt_subspace_step1_vars.back().insert({*int_range_var->name});
-            smt_subspace_step1_vars.push_back({});
         }
     }
 
@@ -3487,6 +2985,7 @@ BasicVar* Encoder::encode_bool_helper_variable(CNF& cnf_clauses) {
 
     auto bool_var = new BasicVar(var_type, name, true);
     bool_var->id = sub_id;
+    smt_name_by_id[sub_id] = *name;
     cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, sub_id, true, 0),
                            make_literal(LiteralType::BOOL_VARIABLE, sub_id, false, 0)});
 
@@ -3502,25 +3001,6 @@ BasicVar* Encoder::encode_bool_helper_variable(CNF& cnf_clauses) {
     return bool_var;
 }
 
-// Gets the left border of an int variable domain
-int get_left(const BasicVar* var){
-    if(holds_alternative<IntRangeVarType*>(*var->type))
-        return get<IntRangeVarType*>(*var->type)->left;
-    else if(holds_alternative<IntSetVarType*>(*var->type))
-        return (*get<IntSetVarType*>(*var->type)->elems)[0];
-    else 
-        return 0;
-}
-
-// Gets the right border of an int variable domain
-int get_right(const BasicVar* var){
-    if(holds_alternative<IntRangeVarType*>(*var->type))
-        return get<IntRangeVarType*>(*var->type)->right;
-    else if(holds_alternative<IntSetVarType*>(*var->type))
-        return (*get<IntSetVarType*>(*var->type)->elems)[get<IntSetVarType*>(*var->type)->elems->size()-1];
-    else
-        return 1;
-}
 
 // Makes a connection between a direct and order encoding of a variable.
 // The variable is supposed to already be encoded using the order encoding
@@ -3568,6 +3048,7 @@ BasicVar* Encoder::encode_param_as_var(Parameter& param, CNF& cnf_clauses){
 
         auto bool_var = new BasicVar(var_type, name, true);
         bool_var->id = sub_id;
+        smt_name_by_id[sub_id] = *name;
         cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, sub_id, bool_val ? true : false, 0)});
 
         if(export_proof){
@@ -3575,19 +3056,8 @@ BasicVar* Encoder::encode_param_as_var(Parameter& param, CNF& cnf_clauses){
             trivial_encoding_domains << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
             trivial_encoding_domains << "---" << endl;
 
-            smt_subspace << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
-            smt_subspace << "---" << endl;
-
-            smt_subspace_vars.back().insert(*bool_var->name);
-            smt_subspace_vars.push_back({});
             smt_dom_vars.back().insert(*bool_var->name);
             smt_dom_vars.push_back({});
-         
-            smt_subspace_step1 << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
-            smt_subspace_step1 << "---" << endl;
-
-            smt_subspace_step1_vars.back().insert({*bool_var->name});
-            smt_subspace_step1_vars.push_back({});
         }
 
         return bool_var;
@@ -3611,6 +3081,7 @@ BasicVar* Encoder::encode_param_as_var(Parameter& param, CNF& cnf_clauses){
 
         auto set_var = new BasicVar(var_type, name, true);
         set_var->id = sub_id;
+        smt_name_by_id[sub_id] = *name;
 
         for(auto elem : *elems){
             cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, sub_id, true, elem)});
@@ -3658,6 +3129,7 @@ BasicVar* Encoder::get_var(Constraint& constr, int ind, CNF& cnf_clauses){
 
             auto bool_var = new BasicVar(var_type, name, true);
             bool_var->id = sub_id;
+            smt_name_by_id[sub_id] = *name;
             cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, sub_id, bool_val ? true : false, 0)});
 
             if(export_proof){
@@ -3667,19 +3139,8 @@ BasicVar* Encoder::get_var(Constraint& constr, int ind, CNF& cnf_clauses){
                 trivial_encoding_domains << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
                 trivial_encoding_domains << "---" << endl;
 
-                smt_subspace << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
-                smt_subspace << "---" << endl;
-
-                smt_subspace_vars.back().insert(*bool_var->name);
-                smt_subspace_vars.push_back({});
                 smt_dom_vars.back().insert(*bool_var->name);
                 smt_dom_vars.push_back({});
-
-                smt_subspace_step1 << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
-                smt_subspace_step1 << "---" << endl;     
-            
-                smt_subspace_step1_vars.back().insert({*bool_var->name});
-                smt_subspace_step1_vars.push_back({});
             }
         
             return bool_var;
@@ -3703,17 +3164,13 @@ BasicVar* Encoder::get_var(Constraint& constr, int ind, CNF& cnf_clauses){
 
             auto set_var = new BasicVar(var_type, name, true);
             set_var->id = sub_id;
+            smt_name_by_id[sub_id] = *name;
 
             for(auto elem : *elems){
                 cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, sub_id, true, elem)});
 
-                if(export_proof){
+                if(export_proof)
                     sat_dom_clauses.push_back({make_literal(LiteralType::SET_ELEM, sub_id, true, elem)});
-                    smt_subspace << set_elem_smt_name(*name, elem) << "\n---\n";  
-                                 
-                    smt_subspace_vars.back().insert(set_elem_smt_name(*name, elem));
-                    smt_subspace_vars.push_back({});
-                }
             }
 
             if(export_proof){
@@ -3833,6 +3290,7 @@ BasicVar* Encoder::get_var_from_array(const ArrayLiteral& a, int ind){
 
             auto bool_var = new BasicVar(var_type, name, true);
             bool_var->id = sub_id;
+            smt_name_by_id[sub_id] = *name;
             cnf_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, sub_id, bool_val ? true : false, 0)});
 
             if(export_proof){
@@ -3840,19 +3298,8 @@ BasicVar* Encoder::get_var_from_array(const ArrayLiteral& a, int ind){
                 trivial_encoding_domains << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
                 trivial_encoding_domains << "---" << endl;
 
-                smt_subspace << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
-                smt_subspace << "---" << endl;
-
-                smt_subspace_vars.back().insert(*bool_var->name);
-                smt_subspace_vars.push_back({});
                 smt_dom_vars.back().insert(*bool_var->name);
                 smt_dom_vars.push_back({});
-                
-                smt_subspace_step1 << (bool_val ? *bool_var->name : "(not " + *bool_var->name + ")") << "\n";
-                smt_subspace_step1 << "---" << endl;
-
-                smt_subspace_step1_vars.back().insert({*bool_var->name});
-                smt_subspace_step1_vars.push_back({});
             }
         
             return bool_var;
@@ -3876,6 +3323,7 @@ BasicVar* Encoder::get_var_from_array(const ArrayLiteral& a, int ind){
 
             auto set_var = new BasicVar(var_type, name, true);
             set_var->id = sub_id;
+            smt_name_by_id[sub_id] = *name;
 
             for(auto elem : *elems){
                 cnf_clauses.push_back({make_literal(LiteralType::SET_ELEM, sub_id, true, elem)});
@@ -5224,24 +4672,16 @@ void Encoder::encode_int_div(const BasicVar& a, const BasicVar& b, const BasicVa
         connection2step << "(mzn_mod " << *a.name << " " << *b.name << " " << *r->name << ")\n"; 
         connection2step << "---" << endl;
 
-        smt_step1_funs << "(define-fun f_" << *bc->name << " () Int\n";
-        smt_step1_funs << "(* " << *b.name << " " << *c.name << ")\n)\n";
-        smt_step1_funs << "(define-fun f_" << *r_abs->name << " () Int\n";
-        smt_step1_funs << "(ite (<= 0 " << *r->name << ") " << *r->name << " (- " << *r->name << ")))\n";
-        smt_step1_funs << "(define-fun f_" << *b_abs->name << " () Int\n";
-        smt_step1_funs << "(ite (<= 0 " << *b.name << ") " << *b.name << " (- " << *b.name << ")))\n";
-        smt_step1_funs << "(define-fun f_" << *r->name << " () Int\n";
-        smt_step1_funs << "(mzn_mod_f " << *a.name << " " << *b.name << ")\n)\n";
+        write_step1_int_witness(*r, "(mzn_mod_f " + *a.name + " " + *b.name + ")");
+        write_step1_int_witness(*bc, "(* " + *b.name + " " + *c.name + ")");
+        const string r_term = step1_witness_term(*r);
+        write_step1_int_witness(*r_abs, "(ite (<= 0 " + r_term + ") " + r_term + " (- " + r_term + "))");
+        write_step1_int_witness(*b_abs, "(ite (<= 0 " + *b.name + ") " + *b.name + " (- " + *b.name + "))");
 
-        smt_subspace_step1 << "(distinct " << *b.name << " 0)\n---\n";
-
-        smt_subspace_step1_vars.back().insert({*b.name});
-        smt_subspace_step1_vars.push_back({});
-
-        left_total_step1 << "(= " << *bc->name << " f_" << *bc->name << ")\n"; 
-        left_total_step1 << "(= " << *r_abs->name << " f_" << *r_abs->name << ")\n"; 
-        left_total_step1 << "(= " << *b_abs->name << " f_" << *b_abs->name << ")\n"; 
-        left_total_step1 << "(= " << *r->name << " f_" << *r->name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *bc->name << " h_" << *bc->name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *r_abs->name << " h_" << *r_abs->name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *b_abs->name << " h_" << *b_abs->name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *r->name << " h_" << *r->name << ")\n"; 
 
         constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         constraints2step2 << "(and\n";
@@ -5513,7 +4953,28 @@ void Encoder::encode_int_le_imp(const BasicVar& a, const BasicVar& b, const Basi
 
 }
 
-// Encodes a substitution x = a1*x2 + a2*x2
+void Encoder::record_step1_substitution_dependency(const BasicVar &var) {
+    if(!export_proof)
+        return;
+
+    auto defining_it = substitution_defining_constraint.find(var.id);
+    if(defining_it == substitution_defining_constraint.end())
+        return;
+
+    const int current_constraint = next_constraint_num - 1;
+    const int defining_constraint = defining_it->second;
+    if(current_constraint == defining_constraint)
+        return;
+
+    auto& dependencies = step1_constraint_dependencies[current_constraint];
+    dependencies.insert(defining_constraint);
+
+    auto transitive_it = step1_constraint_dependencies.find(defining_constraint);
+    if(transitive_it != step1_constraint_dependencies.end())
+        dependencies.insert(transitive_it->second.begin(), transitive_it->second.end());
+}
+
+// Encodes a substitution x = a1*x1 + a2*x2
 void Encoder::encode_substitution(const BasicVar &x, const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, CNF& cnf_clauses){
 
     if(export_proof){
@@ -5528,11 +4989,12 @@ void Encoder::encode_substitution(const BasicVar &x, const BasicVar &x1, int coe
         constraints2step2 << "(= " << *x.name << " (+ (* " << coef1_string << " " << *x1.name << ") (* "
                           << coef2_string << " " << *x2.name << ")))\n";
 
-        smt_step1_funs << "(define-fun f_" << *x.name<< " () Int\n";
-        smt_step1_funs << "(+ (* " << coef1_string << " " << *x1.name << ") (* "
-                          << coef2_string << " " << *x2.name << "))\n)\n";    
+        write_step1_int_witness(x, "(+ (* " + coef1_string + " " + step1_witness_term(x1) + ") (* "
+                                    + coef2_string + " " + step1_witness_term(x2) + "))");
                           
-        left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *x.name << " h_" << *x.name << ")\n"; 
+
+        substitution_defining_constraint[x.id] = next_constraint_num - 1;
 
         smt_constraints_vars.back().insert(*x.name);
         smt_constraints_vars.back().insert(*x1.name);
@@ -5832,6 +5294,7 @@ void Encoder::encode_int_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &v
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -5855,6 +5318,7 @@ void Encoder::encode_int_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &v
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -6031,6 +5495,7 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -6054,6 +5519,7 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -6229,6 +5695,7 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -6252,6 +5719,7 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -6401,6 +5869,7 @@ void Encoder::encode_int_lin_le(const ArrayLiteral& coefs, const ArrayLiteral &v
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -6424,6 +5893,7 @@ void Encoder::encode_int_lin_le(const ArrayLiteral& coefs, const ArrayLiteral &v
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -6602,6 +6072,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -6625,6 +6096,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -6807,6 +6279,7 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -6830,6 +6303,7 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -7075,6 +6549,7 @@ void Encoder::encode_int_lin_ne(const ArrayLiteral& coefs, const ArrayLiteral &v
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -7098,6 +6573,7 @@ void Encoder::encode_int_lin_ne(const ArrayLiteral& coefs, const ArrayLiteral &v
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -7341,6 +6817,7 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -7364,6 +6841,7 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -7584,6 +7062,7 @@ void Encoder::encode_int_lin_ne_imp(const ArrayLiteral& coefs, const ArrayLitera
         encode_substitution(*sub_var, var0, coef0, var1, coef1, cnf_clauses);
     } else {
         sub_var = encoded_substitutions[{var0.id, coef0, var1.id, coef1}];
+        record_step1_substitution_dependency(*sub_var);
     }
 
     BasicVar *sub_var1;
@@ -7607,6 +7086,7 @@ void Encoder::encode_int_lin_ne_imp(const ArrayLiteral& coefs, const ArrayLitera
             encode_substitution(*sub_var1, *sub_var, 1, var_i, coef_i, cnf_clauses);
         } else {
             sub_var1 = encoded_substitutions[{sub_var->id, 1, var_i.id, coef_i}];
+            record_step1_substitution_dependency(*sub_var1);
         }
 
         sub_var = sub_var1;
@@ -8037,24 +7517,15 @@ void Encoder::encode_int_mod(const BasicVar& a, const BasicVar& b, const BasicVa
         connection2step << "(mzn_div " << *a.name << " " << *b.name << " " << *p->name << ")\n"; 
         connection2step << "---" << endl;
 
-        smt_step1_funs << "(define-fun f_" << *bp->name << " () Int\n";
-        smt_step1_funs << "(* " << *b.name << " " << *p->name << ")\n)\n";
-        smt_step1_funs << "(define-fun f_" << *c_abs->name << " () Int\n";
-        smt_step1_funs << "(ite (<= 0 " << *c.name << ") " << *c.name << " (- " << *c.name << ")))\n";
-        smt_step1_funs << "(define-fun f_" << *b_abs->name << " () Int\n";
-        smt_step1_funs << "(ite (<= 0 " << *b.name << ") " << *b.name << " (- " << *b.name << ")))\n";
-        smt_step1_funs << "(define-fun f_" << *p->name << " () Int\n";
-        smt_step1_funs << "(mzn_div_f " << *a.name << " " << *b.name << ")\n)\n";
+        write_step1_int_witness(*p, "(mzn_div_f " + *a.name + " " + *b.name + ")");
+        write_step1_int_witness(*bp, "(* " + *b.name + " " + step1_witness_term(*p) + ")");
+        write_step1_int_witness(*c_abs, "(ite (<= 0 " + *c.name + ") " + *c.name + " (- " + *c.name + "))");
+        write_step1_int_witness(*b_abs, "(ite (<= 0 " + *b.name + ") " + *b.name + " (- " + *b.name + "))");
 
-        smt_subspace_step1 << "(distinct " << *b.name << " 0)\n---\n";
-
-        smt_subspace_step1_vars.back().insert({*b.name});
-        smt_subspace_step1_vars.push_back({});
-
-        left_total_step1 << "(= " << *bp->name << " f_" << *bp->name << ")\n"; 
-        left_total_step1 << "(= " << *c_abs->name << " f_" << *c_abs->name << ")\n"; 
-        left_total_step1 << "(= " << *b_abs->name << " f_" << *b_abs->name << ")\n"; 
-        left_total_step1 << "(= " << *p->name << " f_" << *p->name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *bp->name << " h_" << *bp->name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *c_abs->name << " h_" << *c_abs->name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *b_abs->name << " h_" << *b_abs->name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *p->name << " h_" << *p->name << ")\n"; 
 
         constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         constraints2step2 << "(and\n";
@@ -9460,7 +8931,7 @@ void Encoder::encode_bool_substitution(const BasicVar &x, const BasicVar &x1, in
         string coef1_string = coef1 < 0 ? ("(- " + to_string(-coef1) + ")") : to_string(coef1);
         string coef2_string = coef2 < 0 ? ("(- " + to_string(-coef2) + ")") : to_string(coef2);
         
-        string x1_term = holds_alternative<BasicParType>(*x1.type) ? "(ite " + *x1.name + " 1 0)" : *x1.name;
+        string x1_term = holds_alternative<BasicParType>(*x1.type) ? "(ite " + *x1.name + " 1 0)" : step1_witness_term(x1);
         string x2_term = "(ite " + *x2.name + " 1 0)";
 
         connection2step << "(= " << *x.name << " (+ (* " << coef1_string << " " << x1_term << ") (* "
@@ -9469,11 +8940,10 @@ void Encoder::encode_bool_substitution(const BasicVar &x, const BasicVar &x1, in
         constraints2step2 << "(= " << *x.name << " (+ (* " << coef1_string << " " << x1_term << ") (* "
                           << coef2_string << " " << x2_term << ")))\n";
 
-        smt_step1_funs << "(define-fun f_" << *x.name<< " () Int\n";
-        smt_step1_funs << "(+ (* " << coef1_string << " " << x1_term << ") (* "
-                          << coef2_string << " " << x2_term << "))\n)\n";    
+        write_step1_int_witness(x, "(+ (* " + coef1_string + " " + x1_term + ") (* "
+                                    + coef2_string + " " + x2_term + "))");
                           
-        left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
+        step1_auxiliary_witnesses << "(= " << *x.name << " h_" << *x.name << ")\n"; 
 
         smt_constraints_vars.back().insert(*x.name);
         smt_constraints_vars.back().insert(*x1.name);
@@ -10286,12 +9756,11 @@ void Encoder::encode_set_substitution(const BasicVar &x, const BasicVar &x1, int
             constraints2step2 << "(= " << *x.name << " (+ " << bool_to_int(set_elem_smt_name(S, val1))
                             << " " << bool_to_int(set_elem_smt_name(S, val2)) << "))\n";
     
-            smt_step1_funs << "(define-fun f_" << *x.name<< " () Int\n";
-            smt_step1_funs << " (+ " << bool_to_int(set_elem_smt_name(S, val1))
-                           << " " << bool_to_int(set_elem_smt_name(S, val2)) << ")\n)\n";
+            write_step1_int_witness(x, "(+ " + bool_to_int(set_elem_smt_name(S, val1))
+                                        + " " + bool_to_int(set_elem_smt_name(S, val2)) + ")");
       
                             
-            left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
+            step1_auxiliary_witnesses << "(= " << *x.name << " h_" << *x.name << ")\n"; 
         } else {
             connection2step << "(= " << *x.name << " (+ " << *x1.name << " "
                             << bool_to_int(set_elem_smt_name(S, val2)) << "))\n";
@@ -10300,12 +9769,11 @@ void Encoder::encode_set_substitution(const BasicVar &x, const BasicVar &x1, int
             constraints2step2 << "(= " << *x.name << " (+ " << *x1.name << " "
                             << bool_to_int(set_elem_smt_name(S, val2)) << "))\n";
     
-            smt_step1_funs << "(define-fun f_" << *x.name<< " () Int\n";
-            smt_step1_funs << "(+ " << *x1.name << " "
-                           << bool_to_int(set_elem_smt_name(S, val2)) << ")\n)\n";
+            write_step1_int_witness(x, "(+ " + step1_witness_term(x1) + " "
+                                        + bool_to_int(set_elem_smt_name(S, val2)) + ")");
      
                             
-            left_total_step1 << "(= " << *x.name << " f_" << *x.name << ")\n"; 
+            step1_auxiliary_witnesses << "(= " << *x.name << " h_" << *x.name << ")\n"; 
         }
     }
 
