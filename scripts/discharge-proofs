@@ -16,8 +16,9 @@ Default timeout is 1800 seconds (30 minutes). A timeout or error in one
 obligation does not stop the remaining obligations.
 
 Options:
-  --results OUT_CSV  Write a CSV containing only obligation and walltime.
-                     If Z3 reports sat for an obligation, walltime is FAILED.
+  --results OUT_CSV  Write a CSV containing the obligation, walltime, and the
+                     number of successfully proved SMT queries. If Z3 reports
+                     sat for any query, walltime is FAILED.
 
 Environment variables:
   TIMEOUT_SECONDS  Per-obligation timeout, in seconds. Default: 1800.
@@ -50,12 +51,22 @@ format_wall_time() {
     }'
 }
 
-last_nonempty_line() {
-    awk 'NF {line = $0} END {
-        gsub(/\r/, "", line);
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line);
-        print line;
-    }' "$1"
+count_obligations() {
+    awk '/^[[:space:]]*\(check-sat\)[[:space:]]*(;.*)?$/ {count++}
+         END {print count + 0}' "$1"
+}
+
+count_solver_result() {
+    local result=$1
+    local output=$2
+
+    awk -v result="$result" '{
+        gsub(/\r/, "")
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+        if ($0 == result) {
+            count++
+        }
+    } END {print count + 0}' "$output"
 }
 
 instance_name_from_dir() {
@@ -74,6 +85,8 @@ write_result_row() {
     local proof_set=$3
     local obligation=$4
     local wall=$5
+    local proved_obligations=$6
+    local total_obligations=$7
 
     if [[ -z "$out_csv" ]]; then
         return
@@ -84,7 +97,9 @@ write_result_row() {
         csv_escape "$proof_set"; printf ','
     fi
     csv_escape "$obligation"; printf ','
-    csv_escape "$wall"; printf '\n'
+    csv_escape "$wall"; printf ','
+    csv_escape "$proved_obligations"; printf ','
+    csv_escape "$total_obligations"; printf '\n'
 }
 
 run_proof_dir() {
@@ -132,7 +147,7 @@ run_proof_dir() {
         if [[ ! -f "$body" ]]; then
             echo "[$instance/$proof_set/$name] missing body: $body" >&2
             if [[ -n "$out_csv" ]]; then
-                write_result_row "$recursive" "$instance" "$proof_set" "$name" "NA" >> "$out_csv"
+                write_result_row "$recursive" "$instance" "$proof_set" "$name" "NA" "0" "NA" >> "$out_csv"
             fi
             rm -f "$time_file"
             continue
@@ -158,7 +173,13 @@ run_proof_dir() {
             wall=$(format_wall_time "$wall_seconds")
         fi
 
-        if [[ -n "$out_csv" && "$(last_nonempty_line "$stdout_file")" == "sat" ]]; then
+        total_obligations=$(count_obligations "$body")
+        proved_obligations=$(count_solver_result "unsat" "$stdout_file")
+        sat_outputs=$(count_solver_result "sat" "$stdout_file")
+        all_proved_obligations=$((all_proved_obligations + proved_obligations))
+        all_obligations=$((all_obligations + total_obligations))
+
+        if [[ -n "$out_csv" && $sat_outputs -gt 0 ]]; then
             wall="FAILED"
         fi
 
@@ -171,13 +192,13 @@ run_proof_dir() {
         fi
 
         if [[ -n "$out_csv" ]]; then
-            write_result_row "$recursive" "$instance" "$proof_set" "$name" "$wall" >> "$out_csv"
+            write_result_row "$recursive" "$instance" "$proof_set" "$name" "$wall" "$proved_obligations" "$total_obligations" >> "$out_csv"
         fi
 
         if [[ "$recursive" == "1" ]]; then
-            echo "[$instance/$proof_set/$name] $status $wall"
+            echo "[$instance/$proof_set/$name] $status $wall, proved $proved_obligations/$total_obligations"
         else
-            echo "[$name] $status $wall"
+            echo "[$name] $status $wall, proved $proved_obligations/$total_obligations"
         fi
 
         if [[ -n "$out_csv" ]]; then
@@ -226,6 +247,8 @@ fi
 proof_dir=$1
 timeout_seconds=${TIMEOUT_SECONDS:-1800}
 z3_bin=${Z3_BIN:-z3}
+all_proved_obligations=0
+all_obligations=0
 
 if [[ ! -d "$proof_dir" ]]; then
     echo "Proof directory does not exist: $proof_dir" >&2
@@ -244,7 +267,7 @@ fi
 
 if has_proof_prelude "$proof_dir"; then
     if [[ -n "$out_csv" ]]; then
-        printf 'obligation,walltime\n' > "$out_csv"
+        printf 'obligation,walltime,proved_obligations,total_obligations\n' > "$out_csv"
     fi
     run_proof_dir "$proof_dir" "$(basename "$(dirname "$proof_dir")")" "$(basename "$proof_dir")" "0"
 else
@@ -261,7 +284,7 @@ else
         exit 1
     fi
 
-    printf 'instance,proof_set,obligation,walltime\n' > "$out_csv"
+    printf 'instance,proof_set,obligation,walltime,proved_obligations,total_obligations\n' > "$out_csv"
 
     for found_proof_dir in "${proof_dirs[@]}"; do
         proof_set=$(basename "$found_proof_dir")
@@ -270,6 +293,8 @@ else
         run_proof_dir "$found_proof_dir" "$instance" "$proof_set" "1"
     done
 fi
+
+echo "Successfully proved obligations: $all_proved_obligations/$all_obligations"
 
 if [[ -n "$out_csv" ]]; then
     echo "Wrote: $out_csv"

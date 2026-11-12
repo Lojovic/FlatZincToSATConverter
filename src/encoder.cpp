@@ -1173,10 +1173,73 @@ IntChunkIndex build_var_chunk_index(const IntChunks& chunks) {
     return index;
 }
 
+struct RelatedIdScratch {
+    vector<unsigned int> marks;
+    unsigned int generation = 0;
+
+    void begin(int max_exclusive) {
+        if(++generation == 0) {
+            fill(marks.begin(), marks.end(), 0);
+            generation = 1;
+        }
+
+        if((int)marks.size() < max_exclusive)
+            marks.resize(max_exclusive, 0);
+    }
+
+    bool mark(int id, int max_exclusive) {
+        if(id <= 0 || id >= max_exclusive || marks[id] == generation)
+            return false;
+
+        marks[id] = generation;
+        return true;
+    }
+};
+
+vector<int> finish_related_ids(
+    RelatedIdScratch& scratch,
+    vector<int> touched,
+    int max_exclusive,
+    bool dense
+) {
+    if(!dense) {
+        sort(touched.begin(), touched.end());
+        return touched;
+    }
+
+    vector<int> ids;
+    ids.reserve(touched.size());
+    for(int id = 1; id < max_exclusive; id++)
+        if(scratch.marks[id] == scratch.generation)
+            ids.push_back(id);
+
+    return ids;
+}
+
+void mark_related_id(
+    RelatedIdScratch& scratch,
+    vector<int>& touched,
+    bool& dense,
+    int id,
+    int max_exclusive
+) {
+    if(!scratch.mark(id, max_exclusive) || dense)
+        return;
+
+    touched.push_back(id);
+    if(touched.size() > static_cast<size_t>(max_exclusive / 8)) {
+        touched.clear();
+        dense = true;
+    }
+}
+
 void mark_related_ids(
     const IntSet& vars,
     const IntChunkIndex& index,
-    vector<char>& seen
+    RelatedIdScratch& scratch,
+    vector<int>& touched,
+    bool& dense,
+    int max_exclusive
 ) {
     for(int var : vars) {
         auto it = index.find(var);
@@ -1184,93 +1247,83 @@ void mark_related_ids(
             continue;
 
         for(int id : it->second)
-            if(id > 0 && id < (int)seen.size())
-                seen[id] = true;
+            mark_related_id(scratch, touched, dense, id, max_exclusive);
     }
 }
 
 vector<int> collect_related_ids(
+    RelatedIdScratch& scratch,
     const IntSet& vars,
     const IntChunkIndex& index,
     int max_exclusive
 ) {
-    vector<char> seen(max_exclusive, false);
-    mark_related_ids(vars, index, seen);
-
-    vector<int> ids;
-    for(int id = 1; id < max_exclusive; id++)
-        if(seen[id])
-            ids.push_back(id);
-
-    return ids;
+    scratch.begin(max_exclusive);
+    vector<int> touched;
+    bool dense = false;
+    mark_related_ids(vars, index, scratch, touched, dense, max_exclusive);
+    return finish_related_ids(scratch, move(touched), max_exclusive, dense);
 }
 
 vector<int> collect_related_ids(
+    RelatedIdScratch& scratch,
     const IntSet& vars1,
     const IntSet& vars2,
     const IntChunkIndex& index,
     int max_exclusive
 ) {
-    vector<char> seen(max_exclusive, false);
-    mark_related_ids(vars1, index, seen);
-    mark_related_ids(vars2, index, seen);
-
-    vector<int> ids;
-    for(int id = 1; id < max_exclusive; id++)
-        if(seen[id])
-            ids.push_back(id);
-
-    return ids;
+    scratch.begin(max_exclusive);
+    vector<int> touched;
+    bool dense = false;
+    mark_related_ids(vars1, index, scratch, touched, dense, max_exclusive);
+    mark_related_ids(vars2, index, scratch, touched, dense, max_exclusive);
+    return finish_related_ids(scratch, move(touched), max_exclusive, dense);
 }
 
 vector<int> collect_related_ids(
+    RelatedIdScratch& scratch,
     const IntSet& vars,
     const IntChunkIndex& first_index,
     const IntChunkIndex& second_index,
     int max_exclusive
 ) {
-    vector<char> seen(max_exclusive, false);
-    mark_related_ids(vars, first_index, seen);
-    mark_related_ids(vars, second_index, seen);
-
-    vector<int> ids;
-    for(int id = 1; id < max_exclusive; id++)
-        if(seen[id])
-            ids.push_back(id);
-
-    return ids;
+    scratch.begin(max_exclusive);
+    vector<int> touched;
+    bool dense = false;
+    mark_related_ids(vars, first_index, scratch, touched, dense, max_exclusive);
+    mark_related_ids(vars, second_index, scratch, touched, dense, max_exclusive);
+    return finish_related_ids(scratch, move(touched), max_exclusive, dense);
 }
 
 void mark_mapped_related_ids(
     const IntSet& sat_vars,
     const IntChunkIndex& smt_index,
     const IntSatToSmtIndex& sat_to_smt,
-    vector<char>& seen
+    RelatedIdScratch& scratch,
+    vector<int>& touched,
+    bool& dense,
+    int max_exclusive
 ) {
     for(int sat_var : sat_vars) {
         auto mapped_it = sat_to_smt.find(sat_var);
         if(mapped_it == sat_to_smt.end())
             continue;
 
-        mark_related_ids(mapped_it->second, smt_index, seen);
+        mark_related_ids(mapped_it->second, smt_index, scratch, touched, dense, max_exclusive);
     }
 }
 
 vector<int> collect_mapped_related_ids(
+    RelatedIdScratch& scratch,
     const IntSet& sat_vars,
     const IntChunkIndex& smt_index,
     const IntSatToSmtIndex& sat_to_smt,
     int max_exclusive
 ) {
-    vector<char> seen(max_exclusive, false);
-    mark_mapped_related_ids(sat_vars, smt_index, sat_to_smt, seen);
-
-    vector<int> ids;
-    for(int id = 1; id < max_exclusive; id++)
-        if(seen[id])
-            ids.push_back(id);
-
-    return ids;
+    scratch.begin(max_exclusive);
+    vector<int> touched;
+    bool dense = false;
+    mark_mapped_related_ids(sat_vars, smt_index, sat_to_smt, scratch, touched, dense, max_exclusive);
+    return finish_related_ids(scratch, move(touched), max_exclusive, dense);
 }
 
 IntChunkIndex build_mapped_sat_chunk_index(
@@ -1416,11 +1469,14 @@ unordered_set<string> collect_dependency_vars(
 }
 
 vector<int> collect_related_chunk_ids(
+    RelatedIdScratch& scratch,
     const unordered_set<string>& vars,
     const unordered_map<string, vector<int>>& index,
     int max_exclusive
 ) {
-    vector<char> seen(max_exclusive, false);
+    scratch.begin(max_exclusive);
+    vector<int> touched;
+    bool dense = false;
 
     for(const auto& var : vars) {
         auto it = index.find(var);
@@ -1428,16 +1484,10 @@ vector<int> collect_related_chunk_ids(
             continue;
 
         for(int id : it->second)
-            if(id > 0 && id < max_exclusive)
-                seen[id] = true;
+            mark_related_id(scratch, touched, dense, id, max_exclusive);
     }
 
-    vector<int> ids;
-    for(int id = 1; id < max_exclusive; id++)
-        if(seen[id])
-            ids.push_back(id);
-
-    return ids;
+    return finish_related_ids(scratch, move(touched), max_exclusive, dense);
 }
 
 unordered_map<string, vector<int>> build_string_chunk_index(
@@ -1501,7 +1551,6 @@ bool chunk_mentions_any(
 }
 
 void write_new_theory_proofs(
-    const string& prelude_file,
     int sat_dom_num,
     int smt_dom_num,
     int smt_sat_rel_num,
@@ -1524,13 +1573,11 @@ void write_new_theory_proofs(
     const unordered_map<string, unordered_set<string>>& auxiliary_witness_smt_deps,
     const unordered_map<string, unordered_set<string>>& smt_constraint_deps
 ) {
+    RelatedIdScratch related_id_scratch;
     auto smt_dom_string_index = build_string_chunk_index(smt_dom_vars);
     auto sat_dom_string_index = build_string_chunk_index(sat_dom_vars);
 
-    system("rm -f left_total_proof.smt2");
-    ofstream left_total_proof = ofstream("left_total_proof.smt2", ios::app);
-
-    system(("cat " + prelude_file + " >> left_total_proof.smt2").c_str());
+    ofstream left_total_proof("left_total_body.smt2", ios::out);
 
     for(int i = 1; i < sat_dom_num && i <= (int)sat_dom_vars.size(); i++){
         if(!chunk_mentions_any(sat_dom_vars[i-1], visible_sat_vars))
@@ -1540,7 +1587,7 @@ void write_new_theory_proofs(
         left_total_proof << "(echo \"Check left-total dom" << i << "\")\n";
         left_total_proof << "(assert (and\n";
 
-        for(int j : collect_mapped_related_ids(interned_vars.sat_dom[i-1], smt_dom_index, interned_vars.sat_to_smt, smt_dom_num))
+        for(int j : collect_mapped_related_ids(related_id_scratch, interned_vars.sat_dom[i-1], smt_dom_index, interned_vars.sat_to_smt, smt_dom_num))
             left_total_proof << "smt_dom" << j << "\n";
 
         write_cached_lines_for_vars(left_total_proof, left_total_cache, sat_dom_vars[i-1]);
@@ -1559,7 +1606,7 @@ void write_new_theory_proofs(
         left_total_proof << "(echo \"Check left-total R" << i << "\")\n";
         left_total_proof << "(assert (and\n";
 
-        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], smt_dom_index, smt_dom_num))
+        for(int j : collect_related_ids(related_id_scratch, interned_vars.smt_sat_rel[i-1], smt_dom_index, smt_dom_num))
             left_total_proof << "smt_dom" << j << "\n";
 
         write_cached_lines_for_vars(left_total_proof, left_total_cache, smt_sat_rel_vars[i-1]);
@@ -1575,10 +1622,7 @@ void write_new_theory_proofs(
 
     left_total_proof.close();
 
-    system("rm -f right_total_proof.smt2");
-    ofstream right_total_proof = ofstream("right_total_proof.smt2", ios::app);
-
-    system(("cat " + prelude_file + " >> right_total_proof.smt2").c_str());
+    ofstream right_total_proof("right_total_body.smt2", ios::out);
 
     for(int i = 1; i < smt_dom_num && i <= (int)smt_dom_vars.size(); i++){
         if(!chunk_mentions_any(smt_dom_vars[i-1], visible_smt_vars))
@@ -1588,7 +1632,7 @@ void write_new_theory_proofs(
         right_total_proof << "(echo \"Check right-total dom" << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
-        for(int j : collect_related_ids(interned_vars.smt_dom[i-1], mapped_sat_dom_index, sat_dom_num))
+        for(int j : collect_related_ids(related_id_scratch, interned_vars.smt_dom[i-1], mapped_sat_dom_index, sat_dom_num))
             right_total_proof << "sat_dom" << j << "\n";
 
         write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_dom_vars[i-1]);
@@ -1607,7 +1651,7 @@ void write_new_theory_proofs(
         right_total_proof << "(echo \"Check right-total R" << i << "\")\n";
         right_total_proof << "(assert (and\n";
 
-        for(int j : collect_related_ids(interned_vars.smt_sat_rel[i-1], mapped_sat_dom_index, sat_dom_num))
+        for(int j : collect_related_ids(related_id_scratch, interned_vars.smt_sat_rel[i-1], mapped_sat_dom_index, sat_dom_num))
             right_total_proof << "sat_dom" << j << "\n";
 
         write_cached_lines_for_vars(right_total_proof, right_total_cache, smt_sat_rel_vars[i-1]);
@@ -1623,10 +1667,7 @@ void write_new_theory_proofs(
 
     right_total_proof.close();
 
-    system("rm -f soundness_right_proof.smt2");
-    ofstream soundness_right_proof = ofstream("soundness_right_proof.smt2", ios::app);
-
-    system(("cat " + prelude_file + " >> soundness_right_proof.smt2").c_str());
+    ofstream soundness_right_proof("soundness_right_body.smt2", ios::out);
 
     for(int i = 1; i < next_constraint_num; i++){
         soundness_right_proof << "(push)\n";
@@ -1638,17 +1679,17 @@ void write_new_theory_proofs(
         if(smt_constraint_dep_it != smt_constraint_deps.end())
             smt_formula_vars.insert(smt_constraint_dep_it->second.begin(), smt_constraint_dep_it->second.end());
 
-        for(int j : collect_related_chunk_ids(smt_formula_vars, smt_dom_string_index, smt_dom_num))
+        for(int j : collect_related_chunk_ids(related_id_scratch, smt_formula_vars, smt_dom_string_index, smt_dom_num))
             soundness_right_proof << "smt_dom" << j << "\n";
 
-        auto related_sat_dom_ids = collect_related_ids(interned_vars.sat_constraints[i-1], sat_dom_index, sat_dom_num);
+        auto related_sat_dom_ids = collect_related_ids(related_id_scratch, interned_vars.sat_constraints[i-1], sat_dom_index, sat_dom_num);
 
         for(int j : related_sat_dom_ids)
             soundness_right_proof << "sat_dom" << j << "\n";
 
         soundness_right_proof << "sat_c" << i << "\n";
 
-        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
+        for(int j : collect_related_ids(related_id_scratch, interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
             soundness_right_proof << "smt_sat_rel" << j << "\n";
 
         soundness_right_proof << "(not smt_c" << i << ")\n";
@@ -1663,10 +1704,7 @@ void write_new_theory_proofs(
 
     soundness_right_proof.close();
 
-    system("rm -f soundness_left_proof.smt2");
-    ofstream soundness_left_proof = ofstream("soundness_left_proof.smt2", ios::app);
-
-    system(("cat " + prelude_file + " >> soundness_left_proof.smt2").c_str());
+    ofstream soundness_left_proof("soundness_left_body.smt2", ios::out);
 
     for(int i = 1; i < next_constraint_num; i++){
         soundness_left_proof << "(push)\n";
@@ -1674,10 +1712,10 @@ void write_new_theory_proofs(
         soundness_left_proof << "(assert (and\n";
 
         auto witness_smt_vars = collect_dependency_vars(sat_constraints_vars[i-1], auxiliary_witness_smt_deps);
-        auto related_smt_dom_ids = collect_related_ids(interned_vars.smt_constraints[i-1], smt_dom_index, smt_dom_num);
+        auto related_smt_dom_ids = collect_related_ids(related_id_scratch, interned_vars.smt_constraints[i-1], smt_dom_index, smt_dom_num);
         related_smt_dom_ids = merge_ids(
             related_smt_dom_ids,
-            collect_related_chunk_ids(witness_smt_vars, smt_dom_string_index, smt_dom_num)
+            collect_related_chunk_ids(related_id_scratch, witness_smt_vars, smt_dom_string_index, smt_dom_num)
         );
 
         for(int j : related_smt_dom_ids)
@@ -1685,10 +1723,10 @@ void write_new_theory_proofs(
 
         soundness_left_proof << "smt_c" << i << "\n";
 
-        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], sat_dom_index, sat_dom_num))
+        for(int j : collect_related_ids(related_id_scratch, interned_vars.sat_constraints[i-1], sat_dom_index, sat_dom_num))
             soundness_left_proof << "sat_dom" << j << "\n";
 
-        for(int j : collect_related_ids(interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
+        for(int j : collect_related_ids(related_id_scratch, interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
             soundness_left_proof << "smt_sat_rel" << j << "\n";
 
         write_cached_lines_for_vars(soundness_left_proof, auxiliary_witness_cache, sat_constraints_vars[i-1]);
@@ -1706,34 +1744,12 @@ void write_new_theory_proofs(
     soundness_left_proof.close();
 }
 
-void write_proof_bodies(
-    const string& prelude_file,
-    const vector<pair<string, string>>& proof_files,
-    const string& prelude_output_file
-) {
+void move_proof_prelude(const string& prelude_file, const string& prelude_output_file) {
     if(!std::filesystem::exists(prelude_file))
         return;
 
-    const auto prelude_size = std::filesystem::file_size(prelude_file);
-
-    ifstream prelude(prelude_file, ios::binary);
-    ofstream prelude_out(prelude_output_file, ios::binary);
-    prelude_out << prelude.rdbuf();
-    prelude_out.close();
-    prelude.close();
-
-    for(const auto& [proof_file, body_file] : proof_files){
-        if(!std::filesystem::exists(proof_file))
-            continue;
-
-        ifstream in(proof_file, ios::binary);
-        ofstream out(body_file, ios::binary);
-        in.seekg(prelude_size);
-        out << in.rdbuf();
-        out.close();
-        in.close();
-        std::filesystem::remove(proof_file);
-    }
+    std::filesystem::remove(prelude_output_file);
+    std::filesystem::rename(prelude_file, prelude_output_file);
 }
 
 void Encoder::generate_proof(){
@@ -1961,7 +1977,6 @@ void Encoder::generate_proof(){
         visible_smt_vars.insert(name);
 
     write_new_theory_proofs(
-        "proof.smt2",
         sat_dom_num,
         smt_dom_num,
         smt_sat_rel_num,
@@ -1986,16 +2001,7 @@ void Encoder::generate_proof(){
     );
     proof_file.close();
 
-    write_proof_bodies(
-        "proof.smt2",
-        {
-            {"left_total_proof.smt2", "left_total_body.smt2"},
-            {"right_total_proof.smt2", "right_total_body.smt2"},
-            {"soundness_right_proof.smt2", "soundness_right_body.smt2"},
-            {"soundness_left_proof.smt2", "soundness_left_body.smt2"}
-        },
-        "prelude.smt2"
-    );
+    move_proof_prelude("proof.smt2", "prelude.smt2");
 
 
     system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2");
@@ -2005,7 +2011,6 @@ void Encoder::generate_proof(){
     system("rm -f connection2step.smt2 constraints2step1.smt2 constraints2step2.smt2 domains2step.smt2");
     system("rm -f step1_auxiliary_witnesses.smt2 smt_step1_funs.smt2");
 
-    system("rm proof.smt2");
     system("mkdir -p proofs");
     system("mv prelude.smt2 left_total_body.smt2 right_total_body.smt2 soundness_right_body.smt2 soundness_left_body.smt2 proofs");
 }
@@ -2149,10 +2154,7 @@ void Encoder::generate_proof2step(){
 
     system("mkdir -p proofs_step1");
 
-    system("rm -f soundness_left_proof_step1.smt2");
-    ofstream soundness_left_proof_step1 = ofstream("soundness_left_proof_step1.smt2", ios::app);
-
-    system("cat proof_step1.smt2 >> soundness_left_proof_step1.smt2");
+    ofstream soundness_left_proof_step1("soundness_left_body_step1.smt2", ios::out);
 
     soundness_left_proof_step1 << "(push)\n";
     soundness_left_proof_step1 << "(echo \"Check soundness-left aux-dom step 1\")\n";
@@ -2194,10 +2196,7 @@ void Encoder::generate_proof2step(){
 
     soundness_left_proof_step1.close();
 
-    system("rm -f soundness_right_proof_step1.smt2");
-    ofstream soundness_right_proof_step1 = ofstream("soundness_right_proof_step1.smt2", ios::app);
-
-    system("cat proof_step1.smt2 >> soundness_right_proof_step1.smt2");
+    ofstream soundness_right_proof_step1("soundness_right_body_step1.smt2", ios::out);
 
     for(int i = 1; i < next_constraint_num; i++){
         if(constraint2step_set.find(i) == constraint2step_set.end())
@@ -2230,14 +2229,7 @@ void Encoder::generate_proof2step(){
     soundness_right_proof_step1.close();
 
     proof_file.close();
-    write_proof_bodies(
-        "proof_step1.smt2",
-        {
-            {"soundness_left_proof_step1.smt2", "soundness_left_body_step1.smt2"},
-            {"soundness_right_proof_step1.smt2", "soundness_right_body_step1.smt2"}
-        },
-        "prelude_step1.smt2"
-    );
+    move_proof_prelude("proof_step1.smt2", "prelude_step1.smt2");
 
     system("rm -f proof.smt2");
     proof_file = ofstream("proof.smt2", ios::app);
@@ -2477,7 +2469,6 @@ void Encoder::generate_proof2step(){
         visible_smt_vars.insert(name);
 
     write_new_theory_proofs(
-        "proof.smt2",
         sat_dom_num,
         smt_dom_num,
         smt_sat_rel_num,
@@ -2502,16 +2493,7 @@ void Encoder::generate_proof2step(){
     );
     proof_file.close();
 
-    write_proof_bodies(
-        "proof.smt2",
-        {
-            {"left_total_proof.smt2", "left_total_body.smt2"},
-            {"right_total_proof.smt2", "right_total_body.smt2"},
-            {"soundness_right_proof.smt2", "soundness_right_body.smt2"},
-            {"soundness_left_proof.smt2", "soundness_left_body.smt2"}
-        },
-        "prelude.smt2"
-    );
+    move_proof_prelude("proof.smt2", "prelude.smt2");
 
     system("rm -f helper2.smt2 connection_formula.smt2 trivial*.smt2 sat_dom.smt2");
     system("rm -f left_total.smt2 right_total.smt2 sat_constraints.smt2");
@@ -2520,7 +2502,6 @@ void Encoder::generate_proof2step(){
     system("rm -f connection2step.smt2 constraints2step1.smt2 constraints2step2.smt2 domains2step.smt2 smt_step1_funs.smt2");
     system("rm -f step1_auxiliary_witnesses.smt2 smt_step1_funs.smt2");
 
-    system("rm proof.smt2 proof_step1.smt2");
     system("mkdir -p proofs");
     system("mkdir -p proofs_step1");
     system("mv prelude_step1.smt2 soundness_left_body_step1.smt2 soundness_right_body_step1.smt2 proofs_step1");
@@ -9953,7 +9934,7 @@ void Encoder::encode_set_card(const BasicVar& S, const BasicVar& x, CNF& cnf_cla
     int lower_bound = 0;
     int upper_bound = 2;
 
-    BasicVar* var = encode_int_range_helper_variable(lower_bound, upper_bound, cnf_clauses);
+    BasicVar* var = encode_int_range_helper_variable(lower_bound, upper_bound, cnf_clauses, true);
     encode_set_substitution(*var, *var, elems[0], elems[1], S, cnf_clauses);
     
     BasicVar* var1;
@@ -9963,7 +9944,7 @@ void Encoder::encode_set_card(const BasicVar& S, const BasicVar& x, CNF& cnf_cla
         upper_bound = i + 1;
 
 
-        var1 = encode_int_range_helper_variable(lower_bound, upper_bound, cnf_clauses);
+        var1 = encode_int_range_helper_variable(lower_bound, upper_bound, cnf_clauses, true);
 
         encode_set_substitution(*var1, *var, 1, elems[i], S, cnf_clauses);
 
@@ -11185,11 +11166,40 @@ static void write_set_lex_formula(ostream& os, const BasicVar& x, const vector<i
         for(size_t j = 0; j < i; j++)
             os << "(= " << set_bool_term(x, xs, elems[j]) << " "
                << set_bool_term(y, ys, elems[j]) << ")\n";
-        os << "(not " << set_bool_term(x, xs, elems[i]) << ")\n";
-        os << set_bool_term(y, ys, elems[i]) << "\n";
+
+        os << "(or\n";
+        os << "(and " << set_bool_term(x, xs, elems[i])
+           << " (not " << set_bool_term(y, ys, elems[i]) << ")\n";
+        if(i + 1 == elems.size()){
+            os << "false)\n";
+        } else {
+            os << "(or";
+            for(size_t j = i + 1; j < elems.size(); j++)
+                os << " " << set_bool_term(y, ys, elems[j]);
+            os << "))\n";
+        }
+
+        os << "(and (not " << set_bool_term(x, xs, elems[i]) << ") "
+           << set_bool_term(y, ys, elems[i]) << "\n";
+        if(i + 1 == elems.size()){
+            os << "true)\n";
+        } else {
+            os << "(and";
+            for(size_t j = i + 1; j < elems.size(); j++)
+                os << " (not " << set_bool_term(x, xs, elems[j]) << ")";
+            os << "))\n";
+        }
+        os << ")\n";
         os << ")";
     }
     os << "\n)";
+}
+
+static string set_max_witness_expr(const BasicVar& set_var, const vector<int>& elems, int empty_max){
+    string expr = smt_int(empty_max);
+    for(int elem : elems)
+        expr = "(ite " + set_elem_smt_name(set_var, elem) + " " + smt_int(elem) + " " + expr + ")";
+    return expr;
 }
 
 static void write_set_max_relation(ostream& os, const BasicVar& set_var, const vector<int>& elems,
@@ -11322,6 +11332,11 @@ void Encoder::encode_set_le(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
     if(export_proof){
         is2step = true;
         constraint2step_set.insert(next_constraint_num);
+
+        write_step1_int_witness(*xmax, set_max_witness_expr(x, x_elems, empty_max));
+        write_step1_int_witness(*ymax, set_max_witness_expr(y, y_elems, empty_max));
+        step1_auxiliary_witnesses << "(= " << *xmax->name << " h_" << *xmax->name << ")\n";
+        step1_auxiliary_witnesses << "(= " << *ymax->name << " h_" << *ymax->name << ")\n";
 
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
         write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, false);
@@ -11624,6 +11639,11 @@ void Encoder::encode_set_le_reif(const BasicVar& x, const BasicVar& y, const Bas
     if(export_proof){
         is2step = true;
         constraint2step_set.insert(next_constraint_num);
+
+        write_step1_int_witness(*xmax, set_max_witness_expr(x, x_elems, empty_max));
+        write_step1_int_witness(*ymax, set_max_witness_expr(y, y_elems, empty_max));
+        step1_auxiliary_witnesses << "(= " << *xmax->name << " h_" << *xmax->name << ")\n";
+        step1_auxiliary_witnesses << "(= " << *ymax->name << " h_" << *ymax->name << ")\n";
 
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
         constraints2step1 << "(= " << *r.name << " ";
@@ -11941,6 +11961,11 @@ void Encoder::encode_set_le_imp(const BasicVar& x, const BasicVar& y, const Basi
         is2step = true;
         constraint2step_set.insert(next_constraint_num);
 
+        write_step1_int_witness(*xmax, set_max_witness_expr(x, x_elems, empty_max));
+        write_step1_int_witness(*ymax, set_max_witness_expr(y, y_elems, empty_max));
+        step1_auxiliary_witnesses << "(= " << *xmax->name << " h_" << *xmax->name << ")\n";
+        step1_auxiliary_witnesses << "(= " << *ymax->name << " h_" << *ymax->name << ")\n";
+
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
         constraints2step1 << "(=> " << *r.name << " ";
         write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, false);
@@ -12254,6 +12279,11 @@ void Encoder::encode_set_lt(const BasicVar& x, const BasicVar& y, CNF &cnf_claus
         is2step = true;
         constraint2step_set.insert(next_constraint_num);
 
+        write_step1_int_witness(*xmax, set_max_witness_expr(x, x_elems, empty_max));
+        write_step1_int_witness(*ymax, set_max_witness_expr(y, y_elems, empty_max));
+        step1_auxiliary_witnesses << "(= " << *xmax->name << " h_" << *xmax->name << ")\n";
+        step1_auxiliary_witnesses << "(= " << *ymax->name << " h_" << *ymax->name << ")\n";
+
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
         write_set_lex_formula(constraints2step1, x, x_elems, y, y_elems, true);
         constraints2step1 << "\n)\n";
@@ -12559,6 +12589,11 @@ void Encoder::encode_set_lt_reif(const BasicVar& x, const BasicVar& y, const Bas
     if(export_proof){
         is2step = true;
         constraint2step_set.insert(next_constraint_num);
+
+        write_step1_int_witness(*xmax, set_max_witness_expr(x, x_elems, empty_max));
+        write_step1_int_witness(*ymax, set_max_witness_expr(y, y_elems, empty_max));
+        step1_auxiliary_witnesses << "(= " << *xmax->name << " h_" << *xmax->name << ")\n";
+        step1_auxiliary_witnesses << "(= " << *ymax->name << " h_" << *ymax->name << ")\n";
 
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
         constraints2step1 << "(= " << *r.name << " ";
@@ -12878,6 +12913,11 @@ void Encoder::encode_set_lt_imp(const BasicVar& x, const BasicVar& y, const Basi
     if(export_proof){
         is2step = true;
         constraint2step_set.insert(next_constraint_num);
+
+        write_step1_int_witness(*xmax, set_max_witness_expr(x, x_elems, empty_max));
+        write_step1_int_witness(*ymax, set_max_witness_expr(y, y_elems, empty_max));
+        step1_auxiliary_witnesses << "(= " << *xmax->name << " h_" << *xmax->name << ")\n";
+        step1_auxiliary_witnesses << "(= " << *ymax->name << " h_" << *ymax->name << ")\n";
 
         constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
         constraints2step1 << "(=> " << *r.name << " ";
