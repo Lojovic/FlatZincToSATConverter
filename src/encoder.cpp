@@ -110,28 +110,87 @@ void Encoder::write_to_file(){
     }
 }
 
-static void write_sat_constraint_definition(ostream& out, int index, const vector<string>& lines){
-    out << "(define-fun sat_c" << index << " () Bool\n";
-    if(lines.empty()){
+static void write_boolean_definition(
+    ostream& out,
+    const string& name,
+    const vector<string>& lines,
+    size_t begin,
+    size_t end
+){
+    out << "(define-fun " << name << " () Bool\n";
+    if(begin == end){
         out << "true\n)\n";
         return;
     }
 
     out << "(and\n";
-    for(const string& line : lines)
-        out << line << '\n';
+    for(size_t i = begin; i < end; i++)
+        out << lines[i] << '\n';
     out << ")\n)\n";
 }
 
-static void write_sat_constraint_definitions(ostream& out){
+static size_t write_sat_constraint_definition(
+    ostream& out,
+    int index,
+    const vector<string>& lines,
+    const unordered_map<int, vector<SemanticProofPart>>& semantic_proof_parts,
+    const unordered_set<int>& semantically_partitioned_constraints
+){
+    auto parts_it = semantic_proof_parts.find(index);
+    bool use_parts = semantically_partitioned_constraints.find(index) != semantically_partitioned_constraints.end()
+        && parts_it != semantic_proof_parts.end() && !parts_it->second.empty();
+
+    size_t expected_begin = 0;
+    if(use_parts){
+        for(const auto& part : parts_it->second){
+            if(part.sat_clause_begin != expected_begin || part.sat_clause_end < part.sat_clause_begin
+                || part.sat_clause_end > lines.size()){
+                use_parts = false;
+                break;
+            }
+            expected_begin = part.sat_clause_end;
+        }
+        use_parts = use_parts && expected_begin == lines.size();
+    }
+
+    if(!use_parts){
+        write_boolean_definition(out, "sat_c" + to_string(index), lines, 0, lines.size());
+        return 0;
+    }
+
+    const auto& parts = parts_it->second;
+    for(size_t part_index = 0; part_index < parts.size(); part_index++){
+        const auto& part = parts[part_index];
+        const string suffix = to_string(index) + "_part" + to_string(part_index + 1);
+
+        out << "(define-fun smt_c" << suffix << " () Bool\n";
+        out << part.smt_expression << "\n)\n";
+        write_boolean_definition(out, "sat_c" + suffix, lines, part.sat_clause_begin, part.sat_clause_end);
+    }
+
+    out << "(define-fun sat_c" << index << " () Bool\n(and\n";
+    for(size_t part_index = 0; part_index < parts.size(); part_index++)
+        out << "sat_c" << index << "_part" << part_index + 1 << '\n';
+    out << ")\n)\n";
+    return parts.size();
+}
+
+static vector<size_t> write_sat_constraint_definitions(
+    ostream& out,
+    const unordered_map<int, vector<SemanticProofPart>>& semantic_proof_parts,
+    const unordered_set<int>& semantically_partitioned_constraints
+){
     ifstream sat_constraints_file("sat_constraints.smt2");
+    vector<size_t> part_counts;
     vector<string> lines;
     string line;
     int k = 1;
 
     while(getline(sat_constraints_file, line)){
         if(line == "---"){
-            write_sat_constraint_definition(out, k++, lines);
+            part_counts.push_back(write_sat_constraint_definition(
+                out, k++, lines, semantic_proof_parts, semantically_partitioned_constraints
+            ));
             lines.clear();
         } else {
             lines.push_back(line);
@@ -139,7 +198,11 @@ static void write_sat_constraint_definitions(ostream& out){
     }
 
     if(!lines.empty())
-        write_sat_constraint_definition(out, k, lines);
+        part_counts.push_back(write_sat_constraint_definition(
+            out, k, lines, semantic_proof_parts, semantically_partitioned_constraints
+        ));
+
+    return part_counts;
 }
 
 bool Encoder::is_auxiliary_literal(const LiteralPtr& lit) const {
@@ -859,8 +922,16 @@ void Encoder::write_definition_clauses() {
 }
 
 void Encoder::write_sat_constraint_clauses() {
+    const int constraint_index = (int)sat_constraints_vars.size();
+    auto parts_it = semantic_proof_parts.find(constraint_index);
+    size_t part_index = 0;
 
-    for(const auto& clause : sat_constraint_clauses){
+    for(size_t clause_index = 0; clause_index < sat_constraint_clauses.size(); clause_index++){
+        const auto& clause = sat_constraint_clauses[clause_index];
+        while(parts_it != semantic_proof_parts.end() && part_index < parts_it->second.size()
+              && clause_index >= parts_it->second[part_index].sat_clause_end)
+            part_index++;
+
         if(clause.size() == 0){
             sat_constraints << "false" << endl;
             continue;
@@ -877,6 +948,9 @@ void Encoder::write_sat_constraint_clauses() {
                 sat_constraints << "(not x" << lit_num << ") ";
             
             sat_constraints_vars.back().insert("x" + to_string(lit_num));
+            if(parts_it != semantic_proof_parts.end() && part_index < parts_it->second.size()
+               && clause_index >= parts_it->second[part_index].sat_clause_begin)
+                parts_it->second[part_index].sat_vars.insert("x" + to_string(lit_num));
         }
         if(clause.size() > 1)
             sat_constraints << ")";
@@ -1555,15 +1629,15 @@ void write_new_theory_proofs(
     int smt_dom_num,
     int smt_sat_rel_num,
     int next_constraint_num,
+    const vector<size_t>& sat_constraint_part_counts,
+    const unordered_map<int, vector<SemanticProofPart>>& semantic_proof_parts,
     const vector<unordered_set<string>>& sat_dom_vars,
     const vector<unordered_set<string>>& smt_dom_vars,
     const vector<unordered_set<string>>& sat_constraints_vars,
     const vector<unordered_set<string>>& smt_constraints_vars,
     const vector<unordered_set<string>>& smt_sat_rel_vars,
     const InternedProofVars& interned_vars,
-    const IntChunkIndex& sat_dom_index,
     const IntChunkIndex& smt_dom_index,
-    const IntChunkIndex& smt_sat_rel_index,
     const IntChunkIndex& mapped_sat_dom_index,
     const unordered_set<string>& visible_sat_vars,
     const unordered_set<string>& visible_smt_vars,
@@ -1576,6 +1650,7 @@ void write_new_theory_proofs(
     RelatedIdScratch related_id_scratch;
     auto smt_dom_string_index = build_string_chunk_index(smt_dom_vars);
     auto sat_dom_string_index = build_string_chunk_index(sat_dom_vars);
+    auto smt_sat_rel_string_index = build_string_chunk_index(smt_sat_rel_vars);
 
     ofstream left_total_proof("left_total_body.smt2", ios::out);
 
@@ -1670,36 +1745,58 @@ void write_new_theory_proofs(
     ofstream soundness_right_proof("soundness_right_body.smt2", ios::out);
 
     for(int i = 1; i < next_constraint_num; i++){
-        soundness_right_proof << "(push)\n";
-        soundness_right_proof << "(echo \"Check soundness-right c" << i << "\")\n";
-        soundness_right_proof << "(assert (and\n";
+        const size_t part_count = sat_constraint_part_counts.at(i - 1);
+        const size_t obligation_count = part_count == 0 ? 1 : part_count;
 
-        unordered_set<string> smt_formula_vars = smt_constraints_vars[i-1];
-        auto smt_constraint_dep_it = smt_constraint_deps.find(to_string(i));
-        if(smt_constraint_dep_it != smt_constraint_deps.end())
-            smt_formula_vars.insert(smt_constraint_dep_it->second.begin(), smt_constraint_dep_it->second.end());
+        for(size_t part_index = 0; part_index < obligation_count; part_index++){
+            const bool semantic_part = part_count != 0;
+            unordered_set<string> smt_formula_vars;
+            const unordered_set<string>* sat_formula_vars;
+            string sat_formula = "sat_c" + to_string(i);
+            string smt_formula = "smt_c" + to_string(i);
+            string output_suffix = "c" + to_string(i);
 
-        for(int j : collect_related_chunk_ids(related_id_scratch, smt_formula_vars, smt_dom_string_index, smt_dom_num))
-            soundness_right_proof << "smt_dom" << j << "\n";
+            if(semantic_part){
+                const auto& part = semantic_proof_parts.at(i)[part_index];
+                smt_formula_vars = part.smt_vars;
+                sat_formula_vars = &part.sat_vars;
+                const string part_suffix = "_part" + to_string(part_index + 1);
+                sat_formula += part_suffix;
+                smt_formula += part_suffix;
+                output_suffix += part_suffix;
+            } else {
+                smt_formula_vars = smt_constraints_vars[i-1];
+                sat_formula_vars = &sat_constraints_vars[i-1];
+                auto smt_constraint_dep_it = smt_constraint_deps.find(to_string(i));
+                if(smt_constraint_dep_it != smt_constraint_deps.end())
+                    smt_formula_vars.insert(smt_constraint_dep_it->second.begin(), smt_constraint_dep_it->second.end());
+            }
 
-        auto related_sat_dom_ids = collect_related_ids(related_id_scratch, interned_vars.sat_constraints[i-1], sat_dom_index, sat_dom_num);
+            unordered_set<string> relation_vars = smt_formula_vars;
+            relation_vars.insert(sat_formula_vars->begin(), sat_formula_vars->end());
 
-        for(int j : related_sat_dom_ids)
-            soundness_right_proof << "sat_dom" << j << "\n";
+            soundness_right_proof << "(push)\n";
+            soundness_right_proof << "(echo \"Check soundness-right " << output_suffix << "\")\n";
+            soundness_right_proof << "(assert (and\n";
 
-        soundness_right_proof << "sat_c" << i << "\n";
+            for(int j : collect_related_chunk_ids(related_id_scratch, smt_formula_vars, smt_dom_string_index, smt_dom_num))
+                soundness_right_proof << "smt_dom" << j << "\n";
+            for(int j : collect_related_chunk_ids(related_id_scratch, *sat_formula_vars, sat_dom_string_index, sat_dom_num))
+                soundness_right_proof << "sat_dom" << j << "\n";
 
-        for(int j : collect_related_ids(related_id_scratch, interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
-            soundness_right_proof << "smt_sat_rel" << j << "\n";
+            soundness_right_proof << sat_formula << "\n";
 
-        soundness_right_proof << "(not smt_c" << i << ")\n";
-        soundness_right_proof << ")\n";
-        soundness_right_proof << ")\n";
-        soundness_right_proof << "(check-sat)\n";
-        soundness_right_proof << "(set-option :regular-output-channel \"soundness_right_proof_c" << i <<".out\")\n";
-        soundness_right_proof << "(get-proof)\n";
-        soundness_right_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        soundness_right_proof << "(pop)\n\n";
+            for(int j : collect_related_chunk_ids(related_id_scratch, relation_vars, smt_sat_rel_string_index, smt_sat_rel_num))
+                soundness_right_proof << "smt_sat_rel" << j << "\n";
+
+            soundness_right_proof << "(not " << smt_formula << ")\n";
+            soundness_right_proof << ")\n)\n";
+            soundness_right_proof << "(check-sat)\n";
+            soundness_right_proof << "(set-option :regular-output-channel \"soundness_right_proof_" << output_suffix << ".out\")\n";
+            soundness_right_proof << "(get-proof)\n";
+            soundness_right_proof << "(set-option :regular-output-channel \"stdout\")\n";
+            soundness_right_proof << "(pop)\n\n";
+        }
     }
 
     soundness_right_proof.close();
@@ -1707,38 +1804,62 @@ void write_new_theory_proofs(
     ofstream soundness_left_proof("soundness_left_body.smt2", ios::out);
 
     for(int i = 1; i < next_constraint_num; i++){
-        soundness_left_proof << "(push)\n";
-        soundness_left_proof << "(echo \"Check soundness-left c" << i << "\")\n";
-        soundness_left_proof << "(assert (and\n";
+        const size_t part_count = sat_constraint_part_counts.at(i - 1);
+        const size_t obligation_count = part_count == 0 ? 1 : part_count;
 
-        auto witness_smt_vars = collect_dependency_vars(sat_constraints_vars[i-1], auxiliary_witness_smt_deps);
-        auto related_smt_dom_ids = collect_related_ids(related_id_scratch, interned_vars.smt_constraints[i-1], smt_dom_index, smt_dom_num);
-        related_smt_dom_ids = merge_ids(
-            related_smt_dom_ids,
-            collect_related_chunk_ids(related_id_scratch, witness_smt_vars, smt_dom_string_index, smt_dom_num)
-        );
+        for(size_t part_index = 0; part_index < obligation_count; part_index++){
+            const bool semantic_part = part_count != 0;
+            const unordered_set<string>* smt_formula_vars;
+            const unordered_set<string>* sat_formula_vars;
+            string sat_formula = "sat_c" + to_string(i);
+            string smt_formula = "smt_c" + to_string(i);
+            string output_suffix = "c" + to_string(i);
 
-        for(int j : related_smt_dom_ids)
-            soundness_left_proof << "smt_dom" << j << "\n";
+            if(semantic_part){
+                const auto& part = semantic_proof_parts.at(i)[part_index];
+                smt_formula_vars = &part.smt_vars;
+                sat_formula_vars = &part.sat_vars;
+                const string part_suffix = "_part" + to_string(part_index + 1);
+                sat_formula += part_suffix;
+                smt_formula += part_suffix;
+                output_suffix += part_suffix;
+            } else {
+                smt_formula_vars = &smt_constraints_vars[i-1];
+                sat_formula_vars = &sat_constraints_vars[i-1];
+            }
 
-        soundness_left_proof << "smt_c" << i << "\n";
+            auto witness_smt_vars = collect_dependency_vars(*sat_formula_vars, auxiliary_witness_smt_deps);
+            unordered_set<string> smt_domain_vars = *smt_formula_vars;
+            smt_domain_vars.insert(witness_smt_vars.begin(), witness_smt_vars.end());
+            unordered_set<string> relation_vars = *smt_formula_vars;
+            relation_vars.insert(sat_formula_vars->begin(), sat_formula_vars->end());
 
-        for(int j : collect_related_ids(related_id_scratch, interned_vars.sat_constraints[i-1], sat_dom_index, sat_dom_num))
-            soundness_left_proof << "sat_dom" << j << "\n";
+            soundness_left_proof << "(push)\n";
+            soundness_left_proof << "(echo \"Check soundness-left " << output_suffix << "\")\n";
+            soundness_left_proof << "(assert (and\n";
 
-        for(int j : collect_related_ids(related_id_scratch, interned_vars.sat_constraints[i-1], interned_vars.smt_constraints[i-1], smt_sat_rel_index, smt_sat_rel_num))
-            soundness_left_proof << "smt_sat_rel" << j << "\n";
+            for(int j : collect_related_chunk_ids(related_id_scratch, smt_domain_vars, smt_dom_string_index, smt_dom_num))
+                soundness_left_proof << "smt_dom" << j << "\n";
 
-        write_cached_lines_for_vars(soundness_left_proof, auxiliary_witness_cache, sat_constraints_vars[i-1]);
+            soundness_left_proof << smt_formula << "\n";
 
-        soundness_left_proof << "(not sat_c" << i << ")\n";
-        soundness_left_proof << ")\n";
-        soundness_left_proof << ")\n";
-        soundness_left_proof << "(check-sat)\n";
-        soundness_left_proof << "(set-option :regular-output-channel \"soundness_left_proof_c" << i << ".out\")\n";
-        soundness_left_proof << "(get-proof)\n";
-        soundness_left_proof << "(set-option :regular-output-channel \"stdout\")\n";
-        soundness_left_proof << "(pop)\n\n";
+            for(int j : collect_related_chunk_ids(related_id_scratch, *sat_formula_vars, sat_dom_string_index, sat_dom_num))
+                soundness_left_proof << "sat_dom" << j << "\n";
+
+            for(int j : collect_related_chunk_ids(related_id_scratch, relation_vars, smt_sat_rel_string_index, smt_sat_rel_num))
+                soundness_left_proof << "smt_sat_rel" << j << "\n";
+
+            write_cached_lines_for_vars(soundness_left_proof, auxiliary_witness_cache, *sat_formula_vars);
+
+            soundness_left_proof << "(not " << sat_formula << ")\n";
+            soundness_left_proof << ")\n";
+            soundness_left_proof << ")\n";
+            soundness_left_proof << "(check-sat)\n";
+            soundness_left_proof << "(set-option :regular-output-channel \"soundness_left_proof_" << output_suffix << ".out\")\n";
+            soundness_left_proof << "(get-proof)\n";
+            soundness_left_proof << "(set-option :regular-output-channel \"stdout\")\n";
+            soundness_left_proof << "(pop)\n\n";
+        }
     }
 
     soundness_left_proof.close();
@@ -1750,6 +1871,83 @@ void move_proof_prelude(const string& prelude_file, const string& prelude_output
 
     std::filesystem::remove(prelude_output_file);
     std::filesystem::rename(prelude_file, prelude_output_file);
+}
+
+struct RelationLine {
+    string text;
+    string sat_var;
+    string smt_var;
+};
+
+static RelationLine parse_relation_line(const string& line) {
+    stringstream ss(line);
+    string token;
+    RelationLine relation{line, "", ""};
+
+    ss >> token; // (=
+    ss >> relation.sat_var;
+    ss >> token;
+    if(token == "(<=")
+        ss >> relation.smt_var;
+    else if(token == "(=")
+        ss >> relation.smt_var;
+    else
+        relation.smt_var = token;
+
+    while(!relation.smt_var.empty() && relation.smt_var.back() == ')')
+        relation.smt_var.pop_back();
+
+    return relation;
+}
+
+static void write_smt_sat_relation_definitions(
+    ostream& out,
+    int& next_relation_num,
+    vector<unordered_set<string>>& relation_vars,
+    unordered_set<pair<string, string>, pair_hash>& var_pairs
+) {
+    ifstream relation_file("connection_formula.smt2");
+    vector<string> variable_order;
+    unordered_map<string, vector<RelationLine>> relations_by_variable;
+    string line;
+
+    while(getline(relation_file, line)) {
+        RelationLine relation = parse_relation_line(line);
+        if(relation.sat_var.empty() || relation.smt_var.empty())
+            continue;
+
+        if(relations_by_variable.find(relation.smt_var) == relations_by_variable.end())
+            variable_order.push_back(relation.smt_var);
+        relations_by_variable[relation.smt_var].push_back(move(relation));
+    }
+
+    relation_vars.clear();
+    for(const auto& smt_var : variable_order) {
+        out << "(define-fun smt_sat_rel" << next_relation_num++ << " () Bool\n(and\n";
+        relation_vars.push_back({});
+
+        for(const auto& relation : relations_by_variable[smt_var]) {
+            out << relation.text << '\n';
+            relation_vars.back().insert(relation.sat_var);
+            relation_vars.back().insert(relation.smt_var);
+            var_pairs.insert({relation.sat_var, relation.smt_var});
+        }
+        out << ")\n)\n";
+    }
+
+    out << "(define-fun smt_sat_rel () Bool\n";
+    if(next_relation_num == 1) {
+        out << "true\n)\n";
+        return;
+    }
+
+    if(next_relation_num > 2)
+        out << "(and\n";
+    for(int i = 1; i < next_relation_num; i++)
+        out << "smt_sat_rel" << i << "\n";
+    if(next_relation_num > 2)
+        out << ")\n";
+    out << ")\n";
 }
 
 void Encoder::generate_proof(){
@@ -1869,7 +2067,9 @@ void Encoder::generate_proof(){
         proof_file << ")" << endl;
     }
 
-    write_sat_constraint_definitions(proof_file);
+    const auto sat_constraint_part_counts = write_sat_constraint_definitions(
+        proof_file, semantic_proof_parts, semantically_partitioned_constraints
+    );
 
     proof_file << "(define-fun sat_encode () Bool\n";
     proof_file << "(and\n";
@@ -1878,60 +2078,7 @@ void Encoder::generate_proof(){
         proof_file << "sat_c" << i << endl;
     proof_file << ")\n)\n";
 
-    ifstream smt_sat_rel_reader = ifstream("connection_formula.smt2");
-
-    if(std::filesystem::file_size("connection_formula.smt2") > 0)
-        proof_file << "(define-fun smt_sat_rel" << smt_sat_rel_num++ << " () Bool\n(and\n"; 
-
-    int i = 0, granulation = 50;
-    should_define_fun = false;
-    while(getline(smt_sat_rel_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun smt_sat_rel" << smt_sat_rel_num++ << " () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        proof_file << line << endl;
-
-        stringstream ss(line);
-        string token1, token2;
-
-        ss >> token1; // (=
-        ss >> token1; // bool var
-
-        smt_sat_rel_vars.back().insert(token1);
-        ss >> token2; // SMT term or operator
-        if(token2 == "(<=" || token2 == "(=")
-            ss >> token2; // var
-        if(!token2.empty() && token2.back() == ')')
-            token2.pop_back();
-
-        smt_sat_rel_vars.back().insert(token2);
-
-        var_pairs.insert({token1, token2});
-
-        if(i == granulation){
-            proof_file << ")\n)\n";
-            should_define_fun = true;  
-            i = 0;
-
-            smt_sat_rel_vars.push_back({});
-        }
-
-        i++;
-    }
-    if(i != 1)
-        proof_file << ")\n)\n";
-
-    proof_file << "(define-fun smt_sat_rel () Bool\n";
-    if(smt_sat_rel_num > 2)
-        proof_file << "(and\n";
-    for(int i = 1; i < smt_sat_rel_num; i++)
-        proof_file << "smt_sat_rel" << i << "\n";
-    if(smt_sat_rel_num > 2)
-        proof_file << ")\n";
-    proof_file << ")\n";
+    write_smt_sat_relation_definitions(proof_file, smt_sat_rel_num, smt_sat_rel_vars, var_pairs);
 
     proof_file.flush();
     system("cat sat_smt_funs.smt2 >> proof.smt2");
@@ -1956,8 +2103,6 @@ void Encoder::generate_proof(){
         var_pairs
     );
     auto smt_dom_index = build_var_chunk_index(interned_vars.smt_dom);
-    auto sat_dom_index = build_var_chunk_index(interned_vars.sat_dom);
-    auto smt_sat_rel_index = build_var_chunk_index(interned_vars.smt_sat_rel);
     auto mapped_sat_dom_index = build_mapped_sat_chunk_index(interned_vars.sat_dom, interned_vars.sat_to_smt);
 
     proof_file.flush();
@@ -1981,15 +2126,15 @@ void Encoder::generate_proof(){
         smt_dom_num,
         smt_sat_rel_num,
         next_constraint_num,
+        sat_constraint_part_counts,
+        semantic_proof_parts,
         sat_dom_vars,
         smt_dom_vars,
         sat_constraints_vars,
         smt_constraints_vars,
         smt_sat_rel_vars,
         interned_vars,
-        sat_dom_index,
         smt_dom_index,
-        smt_sat_rel_index,
         mapped_sat_dom_index,
         visible_sat_vars,
         visible_smt_vars,
@@ -2360,7 +2505,9 @@ void Encoder::generate_proof2step(){
         proof_file << ")" << endl;
     }
 
-    write_sat_constraint_definitions(proof_file);
+    const auto sat_constraint_part_counts = write_sat_constraint_definitions(
+        proof_file, semantic_proof_parts, semantically_partitioned_constraints
+    );
 
     proof_file << "(define-fun sat_encode () Bool\n";
     proof_file << "(and\n";
@@ -2369,60 +2516,7 @@ void Encoder::generate_proof2step(){
         proof_file << "sat_c" << i << endl;
     proof_file << ")\n)\n";
 
-    ifstream smt_sat_rel_reader = ifstream("connection_formula.smt2");
-
-    if(std::filesystem::file_size("connection_formula.smt2") > 0)
-        proof_file << "(define-fun smt_sat_rel" << smt_sat_rel_num++ << " () Bool\n(and\n"; 
-
-    int i = 0, granulation = 50;
-    should_define_fun = false;
-    while(getline(smt_sat_rel_reader, line)){
-
-        if(should_define_fun){
-            proof_file << "(define-fun smt_sat_rel" << smt_sat_rel_num++ << " () Bool\n(and\n";
-            should_define_fun = false; 
-        }
-
-        proof_file << line << endl;
-
-        stringstream ss(line);
-        string token1, token2;
-
-        ss >> token1; // (=
-        ss >> token1; // bool var
-
-        smt_sat_rel_vars.back().insert(token1);
-        ss >> token2; // SMT term or operator
-        if(token2 == "(<=" || token2 == "(=")
-            ss >> token2; // var
-        if(!token2.empty() && token2.back() == ')')
-            token2.pop_back();
-
-        smt_sat_rel_vars.back().insert(token2);
-
-        var_pairs.insert({token1, token2});
-
-        if(i == granulation){
-            proof_file << ")\n)\n";
-            should_define_fun = true;  
-            i = 0;
-
-            smt_sat_rel_vars.push_back({});
-        }
-
-        i++;
-    }
-    if(i != 1)
-        proof_file << ")\n)\n";
-
-    proof_file << "(define-fun smt_sat_rel () Bool\n";
-    if(smt_sat_rel_num > 2)
-        proof_file << "(and\n";
-    for(int i = 1; i < smt_sat_rel_num; i++)
-        proof_file << "smt_sat_rel" << i << "\n";
-    if(smt_sat_rel_num > 2)
-        proof_file << ")\n";
-    proof_file << ")\n";
+    write_smt_sat_relation_definitions(proof_file, smt_sat_rel_num, smt_sat_rel_vars, var_pairs);
 
 
     proof_file.flush();
@@ -2448,8 +2542,6 @@ void Encoder::generate_proof2step(){
         var_pairs
     );
     auto smt_dom_index = build_var_chunk_index(interned_vars.smt_dom);
-    auto sat_dom_index = build_var_chunk_index(interned_vars.sat_dom);
-    auto smt_sat_rel_index = build_var_chunk_index(interned_vars.smt_sat_rel);
     auto mapped_sat_dom_index = build_mapped_sat_chunk_index(interned_vars.sat_dom, interned_vars.sat_to_smt);
 
     proof_file.flush();
@@ -2473,15 +2565,15 @@ void Encoder::generate_proof2step(){
         smt_dom_num,
         smt_sat_rel_num,
         next_constraint_num,
+        sat_constraint_part_counts,
+        semantic_proof_parts,
         sat_dom_vars,
         smt_dom_vars,
         sat_constraints_vars,
         smt_constraints_vars,
         smt_sat_rel_vars,
         interned_vars,
-        sat_dom_index,
         smt_dom_index,
-        smt_sat_rel_index,
         mapped_sat_dom_index,
         visible_sat_vars,
         visible_smt_vars,
@@ -4955,20 +5047,43 @@ void Encoder::record_step1_substitution_dependency(const BasicVar &var) {
         dependencies.insert(transitive_it->second.begin(), transitive_it->second.end());
 }
 
+void Encoder::begin_semantic_proof_partition() {
+    record_semantic_proof_parts = export_proof;
+}
+
+void Encoder::finish_semantic_proof_partition(const string &smt_expression,
+                                              size_t sat_clause_begin,
+                                              const unordered_set<string> &smt_vars) {
+    if(export_proof && record_semantic_proof_parts) {
+        semantic_proof_parts[next_constraint_num - 1].push_back({
+            smt_expression,
+            sat_clause_begin,
+            sat_constraint_clauses.size(),
+            smt_vars,
+            {}
+        });
+        semantically_partitioned_constraints.insert(next_constraint_num - 1);
+    }
+    record_semantic_proof_parts = false;
+}
+
 // Encodes a substitution x = a1*x1 + a2*x2
 void Encoder::encode_substitution(const BasicVar &x, const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, CNF& cnf_clauses){
+    const size_t semantic_part_begin = sat_constraint_clauses.size();
+    string semantic_expression;
 
     if(export_proof){
 
         string coef1_string = coef1 < 0 ? ("(- " + to_string(-coef1) + ")") : to_string(coef1);
         string coef2_string = coef2 < 0 ? ("(- " + to_string(-coef2) + ")") : to_string(coef2);
         
-        connection2step << "(= " << *x.name << " (+ (* " << coef1_string << " " << *x1.name << ") (* "
-                        << coef2_string << " " << *x2.name << ")))\n";
+        semantic_expression = "(= " + *x.name + " (+ (* " + coef1_string + " " + *x1.name + ") (* "
+            + coef2_string + " " + *x2.name + ")))";
+
+        connection2step << semantic_expression << "\n";
         connection2step << "---" << endl;
                     
-        constraints2step2 << "(= " << *x.name << " (+ (* " << coef1_string << " " << *x1.name << ") (* "
-                          << coef2_string << " " << *x2.name << ")))\n";
+        constraints2step2 << semantic_expression << "\n";
 
         write_step1_int_witness(x, "(+ (* " + coef1_string + " " + step1_witness_term(x1) + ") (* "
                                     + coef2_string + " " + step1_witness_term(x2) + "))");
@@ -5061,6 +5176,16 @@ void Encoder::encode_substitution(const BasicVar &x, const BasicVar &x1, int coe
                 sat_constraint_clauses.push_back(new_clause);
             new_clause.clear();
         }
+    }
+
+    if(export_proof && record_semantic_proof_parts){
+        semantic_proof_parts[next_constraint_num - 1].push_back({
+            semantic_expression,
+            semantic_part_begin,
+            sat_constraint_clauses.size(),
+            {*x.name, *x1.name, *x2.name},
+            {}
+        });
     }
 
 }
@@ -5255,6 +5380,7 @@ void Encoder::encode_int_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &v
         return;
     }
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -5305,6 +5431,7 @@ void Encoder::encode_int_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &v
         sub_var = sub_var1;
     }
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
     cnf_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
     cnf_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, false, c-1)});
     if(export_proof){
@@ -5313,14 +5440,14 @@ void Encoder::encode_int_lin_eq(const ArrayLiteral& coefs, const ArrayLiteral &v
 
         sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
         sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, false, c-1)});
+        finish_semantic_proof_partition("(= " + *sub_var1->name + " " + c_string + ")",
+                                        final_part_begin, {*sub_var1->name});
     }   
     
 
     if(export_proof){
         constraints2step2 << ")\n)\n";
     }
-
-
 }
 
 // Encodes a constraint of type (a1*x1 + a2*x2 + ... + an*xn = c) <-> r
@@ -5337,7 +5464,7 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
             constraint2step_set.insert(next_constraint_num);
 
             constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-            constraints2step1 << "(= " << *r.name << " (ite (= (+ ";
+            constraints2step1 << "(= " << *r.name << " (= (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -5347,12 +5474,12 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
                 smt_constraints_vars.back().insert(*var->name);
             }
             string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
-            constraints2step1 << ") "<< c_string << ")\n 1 0)))\n";
+            constraints2step1 << ") "<< c_string << "))\n)\n";
             
             constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         } else {
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " (ite (= (+ ";
+            trivial_encoding_constraints << "(= " << *r.name << " (= (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -5362,7 +5489,7 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
                 smt_constraints_vars.back().insert(*var->name);
             }
             string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
-            trivial_encoding_constraints << ") "<< c_string << ") 1 0))\n)\n";
+            trivial_encoding_constraints << ") "<< c_string << "))\n)\n";
         }
     }
 
@@ -5388,7 +5515,7 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
             if(vars.size() > 3)
-                constraints2step2 << "(= r 0)\n)\n";
+                constraints2step2 << "(not " << *r.name << ")\n)\n";
         }
 
         return ;
@@ -5456,6 +5583,7 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
         return;
     }
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -5506,18 +5634,21 @@ void Encoder::encode_int_lin_eq_reif(const ArrayLiteral& coefs, const ArrayLiter
         sub_var = sub_var1;
     }
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
+    const string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
+    const string final_expression = "(= " + *r.name + " (= " + *sub_var1->name + " " + c_string + "))";
     CNF temp_clauses;
 
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, false, c-1)});
     if(export_proof){
-        string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(= " << *r.name << 
-                                " (= " << *sub_var1->name << " " << c_string << "))\n";
+        constraints2step2 << final_expression << "\n";
 
     }   
     
     reify(temp_clauses, r, cnf_clauses);
+    finish_semantic_proof_partition(final_expression, final_part_begin,
+                                    {*r.name, *sub_var1->name});
 
     if(export_proof){
         constraints2step2 << ")\n)\n";
@@ -5590,7 +5721,7 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
             if(vars.size() > 3)
-                constraints2step2 << "(= r 0)\n)\n";
+                constraints2step2 << "(not " << *r.name << ")\n)\n";
         }
 
         return ;
@@ -5656,6 +5787,7 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
         return;
     }
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -5706,18 +5838,21 @@ void Encoder::encode_int_lin_eq_imp(const ArrayLiteral& coefs, const ArrayLitera
         sub_var = sub_var1;
     }
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
+    const string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
+    const string final_expression = "(=> " + *r.name + " (= " + *sub_var1->name + " " + c_string + "))";
     CNF temp_clauses;
 
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, false, c-1)});
     if(export_proof){
-        string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(=> " << *r.name << " " 
-                                " (= " << *sub_var1->name << " " << c_string << ")\n)\n";
+        constraints2step2 << final_expression << "\n";
 
     }   
     
     impify(temp_clauses, r, cnf_clauses);
+    finish_semantic_proof_partition(final_expression, final_part_begin,
+                                    {*r.name, *sub_var1->name});
 
     if(export_proof){
         constraints2step2 << ")\n)\n";
@@ -5830,6 +5965,7 @@ void Encoder::encode_int_lin_le(const ArrayLiteral& coefs, const ArrayLiteral &v
         return;
     }
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -5880,13 +6016,16 @@ void Encoder::encode_int_lin_le(const ArrayLiteral& coefs, const ArrayLiteral &v
         sub_var = sub_var1;
     }
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
+    const string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
+    const string final_expression = "(<= " + *sub_var1->name + " " + c_string + ")";
     cnf_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
     if(export_proof){
-        string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);  
-        constraints2step2 << "(<= sub_" << sub_var1->id << " " <<  c_string << ")\n";
+        constraints2step2 << final_expression << "\n";
 
         sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
     }
+    finish_semantic_proof_partition(final_expression, final_part_begin, {*sub_var1->name});
     
 
     if(export_proof){
@@ -5909,7 +6048,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
             constraint2step_set.insert(next_constraint_num);
 
             constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-            constraints2step1 << "(= " << *r.name << " (ite (<= (+ ";
+            constraints2step1 << "(= " << *r.name << " (<= (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -5919,12 +6058,12 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
                 smt_constraints_vars.back().insert(*var->name);
             }
             string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
-            constraints2step1 << ") "<< c_string << ")\n 1 0)))\n";
+            constraints2step1 << ") "<< c_string << "))\n)\n";
             
             constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         } else {
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " (ite (<= (+ ";
+            trivial_encoding_constraints << "(= " << *r.name << " (<= (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -5934,7 +6073,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
                 smt_constraints_vars.back().insert(*var->name);
             }
             string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
-            trivial_encoding_constraints << ") "<< c_string << ") 1 0))\n)\n";
+            trivial_encoding_constraints << ") "<< c_string << "))\n)\n";
         }
     }
 
@@ -5960,7 +6099,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
             if(vars.size() > 3)
-                constraints2step2 << "(= r 0)\n)\n";
+                constraints2step2 << "(not " << *r.name << ")\n)\n";
         }
 
         return ;
@@ -5973,7 +6112,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0)});
 
             if(vars.size() > 3)
-                constraints2step2 << "(= r 1)\n)\n";
+                constraints2step2 << *r.name << "\n)\n";
         }
 
         return ;
@@ -6033,6 +6172,7 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
         return;
     }
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -6083,17 +6223,20 @@ void Encoder::encode_int_lin_le_reif(const ArrayLiteral& coefs, const ArrayLiter
         sub_var = sub_var1;
     }
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
+    const string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
+    const string final_expression = "(= " + *r.name + " (<= " + *sub_var1->name + " " + c_string + "))";
     CNF temp_clauses;
 
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
     if(export_proof){
-        string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(= " << *r.name << 
-                                " (<= " << *sub_var1->name << " " << c_string << "))\n";
+        constraints2step2 << final_expression << "\n";
 
     }   
     
     reify(temp_clauses, r, cnf_clauses);
+    finish_semantic_proof_partition(final_expression, final_part_begin,
+                                    {*r.name, *sub_var1->name});
 
     if(export_proof){
         constraints2step2 << ")\n)\n";
@@ -6167,7 +6310,7 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
 
             if(vars.size() > 3)
-                constraints2step2 << "(= r 0)\n)\n";
+                constraints2step2 << "(not " << *r.name << ")\n)\n";
         }
 
         return ;
@@ -6240,6 +6383,7 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
         return;
     }
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -6290,17 +6434,20 @@ void Encoder::encode_int_lin_le_imp(const ArrayLiteral& coefs, const ArrayLitera
         sub_var = sub_var1;
     }
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
+    const string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
+    const string final_expression = "(=> " + *r.name + " (<= " + *sub_var1->name + " " + c_string + "))";
     CNF temp_clauses;
 
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c)});
     if(export_proof){
-        string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(=> " << *r.name << " " 
-                                " (<= " << *sub_var1->name << " " << c_string << ")\n)\n";
+        constraints2step2 << final_expression << "\n";
 
     }   
     
     impify(temp_clauses, r, cnf_clauses);
+    finish_semantic_proof_partition(final_expression, final_part_begin,
+                                    {*r.name, *sub_var1->name});
 
     if(export_proof){
         constraints2step2 << ")\n)\n";
@@ -6510,6 +6657,7 @@ void Encoder::encode_int_lin_ne(const ArrayLiteral& coefs, const ArrayLiteral &v
         return;
     }
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -6561,15 +6709,18 @@ void Encoder::encode_int_lin_ne(const ArrayLiteral& coefs, const ArrayLiteral &v
     }
 
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
+    const string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
+    const string final_expression = "(distinct " + *sub_var1->name + " " + c_string + ")";
     cnf_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c - 1),
                             make_literal(LiteralType::ORDER, sub_var1->id, false, c)});
     if(export_proof){
-        string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(distinct " << *sub_var1->name << " " << c_string << ")\n";
+        constraints2step2 << final_expression << "\n";
 
         sat_constraint_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c - 1),
                             make_literal(LiteralType::ORDER, sub_var1->id, false, c)});
-    }   
+    }
+    finish_semantic_proof_partition(final_expression, final_part_begin, {*sub_var1->name});
     
 
     if(export_proof){
@@ -6591,7 +6742,7 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
             constraint2step_set.insert(next_constraint_num);
 
             constraints2step1 << "(define-fun smt_c" << next_constraint_num << "_step1 () Bool\n";
-            constraints2step1 << "(= " << *r.name << " (ite (distinct (+ ";
+            constraints2step1 << "(= " << *r.name << " (distinct (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -6601,12 +6752,12 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
                 smt_constraints_vars.back().insert(*var->name);
             }
             string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
-            constraints2step1 << ") "<< c_string << ")\n 1 0)))\n";
+            constraints2step1 << ") "<< c_string << "))\n)\n";
             
             constraints2step2 << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
         } else {
             trivial_encoding_constraints << "(define-fun smt_c" << next_constraint_num++ << " () Bool\n";
-            trivial_encoding_constraints << "(= " << *r.name << " (ite (distinct (+ ";
+            trivial_encoding_constraints << "(= " << *r.name << " (distinct (+ ";
             for(int i = 0; i < (int)vars.size(); i++){
                 int coef = get_int_from_array(coefs, i);
                 string coef_string = coef < 0 ? ("(- " + to_string(-coef) + ")") : to_string(coef);
@@ -6616,7 +6767,7 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
                 smt_constraints_vars.back().insert(*var->name);
             }
             string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
-            trivial_encoding_constraints << ") "<< c_string << ") 1 0))\n)\n";
+            trivial_encoding_constraints << ") "<< c_string << "))\n)\n";
         }
     }
 
@@ -6642,7 +6793,7 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0)});
 
             if(vars.size() > 3)
-                constraints2step2 << "(= r 1)\n)\n";
+                constraints2step2 << *r.name << "\n)\n";
         }
 
         return ;        
@@ -6778,6 +6929,7 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
     }
 
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -6828,17 +6980,20 @@ void Encoder::encode_int_lin_ne_reif(const ArrayLiteral& coefs, const ArrayLiter
         sub_var = sub_var1;
     }
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
+    const string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
+    const string final_expression = "(= " + *r.name + " (distinct " + *sub_var1->name + " " + c_string + "))";
     CNF temp_clauses;
 
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c - 1),
                             make_literal(LiteralType::ORDER, sub_var1->id, false, c)});
     if(export_proof){
-        string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(= " << *r.name << 
-                                " (distinct " << *sub_var1->name << " " << c_string << "))\n";
+        constraints2step2 << final_expression << "\n";
     }   
     
     reify(temp_clauses, r, cnf_clauses);
+    finish_semantic_proof_partition(final_expression, final_part_begin,
+                                    {*r.name, *sub_var1->name});
 
     if(export_proof){
         constraints2step2 << ")\n)\n";
@@ -6907,6 +7062,9 @@ void Encoder::encode_int_lin_ne_imp(const ArrayLiteral& coefs, const ArrayLitera
         
         if(export_proof){
             sat_constraint_clauses.push_back({make_literal(LiteralType::BOOL_VARIABLE, r.id, true, 0), make_literal(LiteralType::BOOL_VARIABLE, r.id, false, 0)});
+
+            if(vars.size() > 3)
+                constraints2step2 << "true\n)\n";
         }
 
         return ;        
@@ -7023,6 +7181,7 @@ void Encoder::encode_int_lin_ne_imp(const ArrayLiteral& coefs, const ArrayLitera
     }
 
 
+    begin_semantic_proof_partition();
     if(export_proof)
         constraints2step2 << "(and\n";
 
@@ -7073,17 +7232,20 @@ void Encoder::encode_int_lin_ne_imp(const ArrayLiteral& coefs, const ArrayLitera
         sub_var = sub_var1;
     }
 
+    const size_t final_part_begin = sat_constraint_clauses.size();
+    const string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c);
+    const string final_expression = "(=> " + *r.name + " (distinct " + *sub_var1->name + " " + c_string + "))";
     CNF temp_clauses;
 
     temp_clauses.push_back({make_literal(LiteralType::ORDER, sub_var1->id, true, c - 1),
                             make_literal(LiteralType::ORDER, sub_var1->id, false, c)});
     if(export_proof){
-        string c_string = c < 0 ? ("(- " + to_string(-c) + ")") : to_string(c); 
-        constraints2step2 << "(=> " << *r.name <<
-                                " (distinct " << *sub_var1->name << " " << c_string << "))\n";
+        constraints2step2 << final_expression << "\n";
     }   
     
     impify(temp_clauses, r, cnf_clauses);
+    finish_semantic_proof_partition(final_expression, final_part_begin,
+                                    {*r.name, *sub_var1->name});
 
     if(export_proof){
         constraints2step2 << ")\n)\n";
@@ -8912,16 +9074,18 @@ void Encoder::encode_bool_substitution(const BasicVar &x, const BasicVar &x1, in
         string coef1_string = coef1 < 0 ? ("(- " + to_string(-coef1) + ")") : to_string(coef1);
         string coef2_string = coef2 < 0 ? ("(- " + to_string(-coef2) + ")") : to_string(coef2);
         
-        string x1_term = holds_alternative<BasicParType>(*x1.type) ? "(ite " + *x1.name + " 1 0)" : step1_witness_term(x1);
+        const bool x1_is_bool = holds_alternative<BasicParType>(*x1.type);
+        string x1_formula_term = x1_is_bool ? "(ite " + *x1.name + " 1 0)" : *x1.name;
+        string x1_witness_term = x1_is_bool ? x1_formula_term : step1_witness_term(x1);
         string x2_term = "(ite " + *x2.name + " 1 0)";
 
-        connection2step << "(= " << *x.name << " (+ (* " << coef1_string << " " << x1_term << ") (* "
+        connection2step << "(= " << *x.name << " (+ (* " << coef1_string << " " << x1_formula_term << ") (* "
                         << coef2_string << " " << x2_term << ")))\n";
         connection2step << "---" << endl;
-        constraints2step2 << "(= " << *x.name << " (+ (* " << coef1_string << " " << x1_term << ") (* "
+        constraints2step2 << "(= " << *x.name << " (+ (* " << coef1_string << " " << x1_formula_term << ") (* "
                           << coef2_string << " " << x2_term << ")))\n";
 
-        write_step1_int_witness(x, "(+ (* " + coef1_string + " " + x1_term + ") (* "
+        write_step1_int_witness(x, "(+ (* " + coef1_string + " " + x1_witness_term + ") (* "
                                     + coef2_string + " " + x2_term + "))");
                           
         step1_auxiliary_witnesses << "(= " << *x.name << " h_" << *x.name << ")\n"; 

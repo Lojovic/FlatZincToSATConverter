@@ -3,10 +3,13 @@ set -u
 
 usage() {
     cat <<'EOF'
-Usage: discharge-proofs [--results OUT_CSV] PROOF_DIR
+Usage: discharge-proofs [--no-proofs] [--results OUT_CSV] PROOF_DIR
 
 Runs the proof-obligation bodies in PROOF_DIR one by one by piping:
   cat prelude body | timeout TIMEOUT_SECONDS z3 -in
+
+With --no-proofs, the same obligations are checked after filtering proof
+production commands from the input stream.
 
 With --results, PROOF_DIR may also be a problem-level folder containing:
   proof_exports/<instance>/proofs
@@ -16,6 +19,8 @@ Default timeout is 1800 seconds (30 minutes). A timeout or error in one
 obligation does not stop the remaining obligations.
 
 Options:
+  --no-proofs        Check validity without asking Z3 to construct proof objects.
+                     The SMT-LIB files on disk are not modified.
   --results OUT_CSV  Write a CSV containing the obligation, walltime, and the
                      number of successfully proved SMT queries. If Z3 reports
                      sat for any query, walltime is FAILED.
@@ -26,6 +31,7 @@ Environment variables:
 
 Examples:
   discharge-proofs /tmp/run/proofs
+  discharge-proofs --no-proofs /tmp/run/proofs
   discharge-proofs --results /tmp/times.csv /tmp/run/proofs_step1
   discharge-proofs --results /tmp/problem-times.csv /tmp/run/problem-folder
 EOF
@@ -161,7 +167,7 @@ run_proof_dir() {
 
         exit_code=0
         /usr/bin/time -f 'TIME_RESULT,%e,%U,%S,%M' -o "$time_file" \
-            bash -o pipefail -c 'cd "$5" && cat "$1" "$2" | timeout "$3" "$4" -in' _ "$prelude" "$body" "$timeout_seconds" "$z3_bin" "$proof_out_dir" \
+            bash -o pipefail -c 'cd "$5" && { if [[ "$6" == "1" ]]; then cat "$1" "$2"; else sed -e "/(set-option :produce-proofs true)/d" -e "/(get-proof)/d" "$1" "$2"; fi; } | timeout "$3" "$4" -in' _ "$prelude" "$body" "$timeout_seconds" "$z3_bin" "$proof_out_dir" "$produce_proofs" \
             > "$stdout_file" 2> "$stderr_file" || exit_code=$?
 
         time_result=$(awk -F',' '/^TIME_RESULT/ {print $0}' "$time_file" | tail -1)
@@ -209,7 +215,9 @@ run_proof_dir() {
     done
 
     echo "Logs under: $log_dir"
-    echo "Z3 proof outputs under: $proof_out_dir"
+    if [[ "$produce_proofs" == "1" ]]; then
+        echo "Z3 proof outputs under: $proof_out_dir"
+    fi
 }
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -218,8 +226,13 @@ if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 out_csv=""
+produce_proofs=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --no-proofs)
+            produce_proofs=0
+            shift
+            ;;
         --results)
             if [[ $# -lt 2 ]]; then
                 echo "--results requires a path" >&2

@@ -90,6 +90,14 @@ struct InternedProofVars {
     IntSatToSmtIndex sat_to_smt;
 };
 
+struct SemanticProofPart {
+    string smt_expression;
+    size_t sat_clause_begin;
+    size_t sat_clause_end;
+    unordered_set<string> smt_vars;
+    unordered_set<string> sat_vars;
+};
+
 class Encoder {
 public:
     Encoder(const vector<Item>& items, const FileType fileType, const SolverType solverType, const bool export_proof);
@@ -207,6 +215,9 @@ private:
     unordered_map<tuple<int, int, int, int>, BasicVar*, substitution_map_hash> encoded_substitutions;
     unordered_map<int, int> substitution_defining_constraint;
     unordered_map<int, unordered_set<int>> step1_constraint_dependencies;
+    unordered_map<int, vector<SemanticProofPart>> semantic_proof_parts;
+    unordered_set<int> semantically_partitioned_constraints;
+    bool record_semantic_proof_parts = false;
 
     vector<unordered_set<string>> sat_constraints_vars = {{}};
     vector<unordered_set<string>> connection2step_vars = {{}};
@@ -278,6 +289,10 @@ private:
     void encode_int_le_reif(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
     void encode_int_le_imp(const BasicVar &a, const BasicVar &b, const BasicVar &r, CNF &cnf_clauses);
     void record_step1_substitution_dependency(const BasicVar &var);
+    void begin_semantic_proof_partition();
+    void finish_semantic_proof_partition(const string &smt_expression,
+                                         size_t sat_clause_begin,
+                                         const unordered_set<string> &smt_vars);
     void encode_substitution(const BasicVar &var, const BasicVar &var1, const int coef1, const BasicVar &var2, const int coef2, CNF &cnf_clauses);
     void lin_le_2args(const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, int c, CNF &cnf_clauses);
     void lin_le_3args(const BasicVar &x1, int coef1, const BasicVar &x2, int coef2, const BasicVar &x3, int coef3, int c, CNF &cnf_clauses);
